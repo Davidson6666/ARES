@@ -23,6 +23,19 @@ Nome de trabalho: **ARES**. Expansão provisória: *Adaptive Response & Event Se
 | [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) | Versões reais das ferramentas de desenvolvimento. |
 | [docs/adr/](docs/adr/) | Decisões arquiteturais. |
 
+## Backend (desenvolvimento)
+
+Requer [uv](https://docs.astral.sh/uv/) e Python 3.14.
+
+```powershell
+cd backend
+uv sync
+uv run pytest
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Configuração por variáveis `ARES_*` ou `backend/.env` (modelo em [backend/.env.example](backend/.env.example)).
+
 ## Stack proposta
 
 Python/FastAPI, React + TypeScript, PostgreSQL. Detalhes e status de cada decisão na especificação.

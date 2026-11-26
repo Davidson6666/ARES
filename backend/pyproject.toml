@@ -1,0 +1,37 @@
+[project]
+name = "ares-backend"
+version = "0.1.0"
+description = "ARES Core — backend (fase 01a)"
+license = "Apache-2.0"
+requires-python = "==3.14.*"
+dependencies = [
+    "fastapi==0.165.0",
+    "uvicorn==0.54.0",
+    "pydantic==2.14.4",
+    "pydantic-settings==2.16.3",
+    "structlog==26.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "httpx==0.29.0",
+    "ruff==0.17.6",
+    "mypy==2.4.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["app", "tests"]
+
+[tool.uv]
+# Aplicação, não biblioteca: não instalar o próprio projeto como pacote.
+package = false
