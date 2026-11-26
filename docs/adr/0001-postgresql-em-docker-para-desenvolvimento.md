@@ -49,6 +49,18 @@ No desenvolvimento local, o PostgreSQL roda em contêiner Docker, definido em ar
 | Backup dos dados de desenvolvimento | Sem backup (dados descartáveis) ou `pg_dump` periódico | Baixo enquanto os dados forem sintéticos. |
 | Atualização de patch da imagem | Revisar a cada release menor ou na data de revisão | Correções de segurança acumuladas na imagem fixada. |
 
+## Revisão de 26/11/2026 (item 3 da 21.13, após revisão de segurança)
+
+| Item | Decisão | Motivo |
+|---|---|---|
+| Papéis do banco | `POSTGRES_USER` (superusuário) só faz o bootstrap do contêiner e roda os testes. `ares_owner` (sem SUPERUSER, CREATEDB nem CREATEROLE) é dono do banco e do schema `public` e roda as migrações. `ares_app` é o usuário da API. | Migração rodando como superusuário permitiria, por exemplo, `COPY ... TO PROGRAM`. |
+| Privilégios de `ares_app` | Sem default privileges. Cada migração concede, tabela por tabela, só o necessário. Um teste (`test_app_role_privileges_match_matrix`) compara os privilégios reais com uma matriz esperada. | Com default privileges, toda tabela nova (incluindo `audit_logs`) nasceria com UPDATE e DELETE para a API. |
+| CONNECT de `PUBLIC` | Revogado em `ares`, `postgres` e `template1`. | `ares_app` só conecta no banco `ares`. |
+| Imagem | `postgres:18.6` fixada também por digest (ver `docs/ENVIRONMENT.md`). | Uma tag pode ser republicada. |
+| Senhas no init | Lidas com `\getenv` dentro do psql. `log_min_error_statement = panic` durante o `CREATE ROLE`. | A senha não aparece na linha de comando do processo nem nos logs do servidor. |
+
+Em aberto: as senhas continuam no ambiente do contêiner (visíveis em `docker inspect`). Isso é aceitável para desenvolvimento local. Para outros ambientes, usar `secrets:` do Compose.
+
 ## Consequências
 
 - O ambiente de banco fica reproduzível a partir do repositório. Ele é recriado do zero com um comando.

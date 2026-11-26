@@ -1,14 +1,17 @@
-"""Endpoints de saúde (complemento e v1.1, seção 14.10).
+"""Endpoints de saúde (v1.1, seção 14.10).
 
 - ``/health``: o processo está vivo. Sem detalhes internos.
-- ``/ready``: o Core pode receber tráfego. Hoje só confirma a configuração;
-  a verificação do banco entra no item 3 da fase 01a.
+- ``/ready``: dependências essenciais (hoje, o banco) prontas. Em falha,
+  503 com o corpo de erro padrão, sem revelar o motivo técnico.
 """
 
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel
+
+from app.core.database import database_is_ready
+from app.core.errors import error_response
 
 router = APIRouter()
 
@@ -23,5 +26,12 @@ def health() -> StatusResponse:
 
 
 @router.get("/ready", response_model=StatusResponse)
-def ready() -> StatusResponse:
+def ready(request: Request) -> StatusResponse | Response:
+    if not database_is_ready(request.app.state.engine):
+        return error_response(
+            request,
+            status_code=503,
+            code="dependency_unavailable",
+            message="O serviço ainda não está pronto.",
+        )
     return StatusResponse(status="ready")

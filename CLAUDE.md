@@ -63,6 +63,9 @@ Projeto de portfólio, sem operação real. Repositório ainda sem código de fu
 | Retenção e dados sensíveis (item 8 da seção 1) | Em branco | Idem | Idem |
 | Nome e expansão do projeto | Manter ARES; expansão provisória | Baixo | Antes da publicação |
 | Verificação de licença das dependências | Análise por dependência | Vincular GPL sem análise | Antes da primeira publicação pública |
+| Acesso a `/ready` (complemento 3.1 diz público só `/health`; v1.1 seção 15 diz "interno/admin conforme implantação") | Restringir na implantação (bind local, proxy) ou exigir autenticação | Hoje é público, com corpo mínimo e sem motivo técnico | Item 4 da 21.13 |
+| Formato do corpo de erro: plano (complemento 3.4) × aninhado em `error` (exemplo da v1.1, 15.2) | Implementado plano, porque o complemento prevalece | Baixo; a 15.2 da v1.1 não foi corrigida explicitamente | Próxima revisão da spec |
+| Parâmetro de query desconhecido → 400 (complemento 3.4) | Aplicar a todas as rotas ou só às de `/api/v1` | `/health?x=1` responde 200 hoje | Item 4 da 21.13 |
 
 **Não preencha a seção 5 do complemento sem o autor pedir.**
 
