@@ -931,7 +931,7 @@ Coletar apenas os dados necessários para a finalidade de segurança definida. D
 
 - Objetivo: plataforma de cibersegurança defensiva e modular.
 
-- Desenvolvimento manual pelo usuário; o assistente deve fornecer especificações, explicações e revisão, não despejar implementação para cópia como padrão.
+- Desenvolvimento feito pelo assistente (Claude) a pedido do autor; o autor revisa antes de cada merge em `main`. Alteração de 26/11/2026, registrada na versão 1.2 do histórico. Substitui a versão anterior, que previa desenvolvimento manual pelo usuário.
 
 - Ambiente principal: Windows; memória RAM informada: 16 GB; nível de programação: avançado.
 
@@ -1334,3 +1334,4 @@ O primeiro marco será considerado concluído quando o Core iniciar de forma rep
 |---|---|---|
 | 1.0 | 26/11/2026 | Especificação geral e arquitetura proposta do ARES Core. |
 | 1.1 | 26/11/2026 | Inclusão do checklist detalhado de pré-implementação, critérios para liberar o início da programação e primeira iteração recomendada. |
+| 1.2 | 26/11/2026 | Seção 19.1: desenvolvimento passa a ser feito pelo assistente (Claude) a pedido do autor, com revisão do autor antes de cada merge. Motivo: decisão do autor. Impacto: CLAUDE.md seção 3 e skill model-routing já alinhados. Responsável: autor. Status: confirmado pelo autor em 26/11/2026. Versão em `.docx` não atualizada; este `.md` é a versão de trabalho. |
