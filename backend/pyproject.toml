@@ -13,6 +13,7 @@ dependencies = [
     "sqlalchemy==2.1.9",
     "alembic==1.20.1",
     "psycopg[binary]==3.3.9",
+    "argon2-cffi==25.1.0",
 ]
 
 [dependency-groups]
@@ -39,3 +40,7 @@ files = ["app", "tests"]
 [tool.uv]
 # Aplicação, não biblioteca: não instalar o próprio projeto como pacote.
 package = false
+
+[tool.ruff.lint.flake8-bugbear]
+# Idioma do FastAPI: Depends/Query como valor padrão não é estado mutável.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]

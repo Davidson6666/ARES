@@ -43,6 +43,12 @@ Requer [uv](https://docs.astral.sh/uv/), Python 3.14 e Docker Desktop.
    uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
    ```
 
+4. Crie o primeiro administrador (só por linha de comando, como `ares_owner`; não existe rota HTTP para isso). A senha é pedida sem eco:
+
+   ```powershell
+   uv run python -m app.cli create-admin --email voce@exemplo.local --display-name "Seu Nome"
+   ```
+
 Testes: `uv run pytest`. Os testes de banco só rodam com `ARES_TEST_ADMIN_DATABASE_URL` definido (usuário que pode criar bancos); cada teste cria e apaga um banco temporário.
 
 Usuários do banco:

@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.request_id import HEADER as REQUEST_ID_HEADER
@@ -33,6 +34,24 @@ _HTTP_CODES: dict[int, tuple[str, str]] = {
     429: ("rate_limited", "Limite de requisições excedido."),
     503: ("dependency_unavailable", "O serviço ainda não está pronto."),
 }
+
+
+class ApiError(Exception):
+    """Erro de negócio com código estável. Use em vez de HTTPException quando
+    o ``code`` precisa ser específico (ex.: ``invalid_credentials``)."""
+
+    def __init__(
+        self,
+        status_code: int,
+        code: str,
+        message: str,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.status_code = status_code
+        self.code = code
+        self.message = message
+        self.headers = headers
 
 
 def error_response(
@@ -84,7 +103,29 @@ async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse
     return error_response(request, 500, "internal_error", "Erro interno.")
 
 
+async def _api_error(request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, ApiError)
+    return error_response(request, exc.status_code, exc.code, exc.message, headers=exc.headers)
+
+
+async def _database_unavailable(request: Request, exc: Exception) -> JSONResponse:
+    # Complemento 3.4: dependência essencial indisponível é 503.
+    # OperationalError cobre conexão recusada, queda e timeout. Outros erros
+    # do driver (ex.: violação de constraint) continuam 500.
+    if isinstance(exc, OperationalError) or (
+        isinstance(exc, DBAPIError) and exc.connection_invalidated
+    ):
+        logger.warning(
+            "banco indisponível", extra={"request_id": getattr(request.state, "request_id", None)}
+        )
+        code, message = _HTTP_CODES[503]
+        return error_response(request, 503, code, message, headers={"Retry-After": "5"})
+    return await _unhandled_exception(request, exc)
+
+
 def register_exception_handlers(app: FastAPI) -> None:
+    app.add_exception_handler(ApiError, _api_error)
+    app.add_exception_handler(DBAPIError, _database_unavailable)
     app.add_exception_handler(StarletteHTTPException, _http_exception)
     app.add_exception_handler(RequestValidationError, _validation_exception)
     app.add_exception_handler(Exception, _unhandled_exception)

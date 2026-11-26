@@ -20,8 +20,11 @@ config = context.config
 if config.config_file_name is not None and not config.attributes.get("skip_logging"):
     fileConfig(config.config_file_name)
 
-# Sem modelos ORM ainda (entram no item 4); autogenerate desligado.
-target_metadata = None
+# Metadados dos modelos: permite conferir migração × modelo (alembic check).
+from app.auth import models as _models  # noqa: F401  (registra as tabelas)
+from app.core.db_base import Base
+
+target_metadata = Base.metadata
 
 
 def _url() -> str:

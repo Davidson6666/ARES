@@ -1,51 +1,23 @@
-from collections.abc import Iterator
-from pathlib import Path
-
 import pytest
 from alembic import command
-from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
-APP_ROLE = "ares_app"
+from tests.conftest import alembic_config as _alembic_config
 
 # Privilégios esperados do usuário da API, por tabela, após `upgrade head`.
 # Toda migração que criar tabela ou conceder acesso atualiza esta matriz.
 # Tabela nova sem entrada aqui => o teste falha se ares_app ganhar acesso a ela.
-EXPECTED_APP_GRANTS: set[tuple[str, str]] = set()
+# Nenhum DELETE em users nem em sessions (usuário nunca é apagado; sessão é revogada).
+EXPECTED_APP_GRANTS: set[tuple[str, str]] = {
+    *{("users", p) for p in ("SELECT", "UPDATE")},
+    ("roles", "SELECT"),
+    ("permissions", "SELECT"),
+    ("user_roles", "SELECT"),
+    ("role_permissions", "SELECT"),
+    *{("sessions", p) for p in ("SELECT", "INSERT", "UPDATE")},
+}
 
 pytestmark = pytest.mark.db
-
-
-def _alembic_config(url: str) -> Config:
-    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
-    cfg.attributes["url"] = url
-    cfg.attributes["skip_logging"] = True
-    return cfg
-
-
-@pytest.fixture(scope="session")
-def app_role(admin_url: str) -> Iterator[str]:
-    """Garante que o papel ares_app exista no cluster de teste.
-
-    Se já existir (ex.: contêiner de dev), não é alterado. Se não existir, é
-    criado NOLOGIN e removido no fim. Nunca usa DROP OWNED: isso revogaria
-    privilégios reais do papel em outros bancos.
-    """
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-    with engine.connect() as conn:
-        exists = conn.execute(
-            text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": APP_ROLE}
-        ).scalar()
-        if not exists:
-            conn.execute(text(f"CREATE ROLE {APP_ROLE} NOLOGIN"))
-    try:
-        yield APP_ROLE
-    finally:
-        if not exists:
-            with engine.connect() as conn:
-                conn.execute(text(f"DROP ROLE IF EXISTS {APP_ROLE}"))
-        engine.dispose()
 
 
 def test_upgrade_and_downgrade_cycle(temp_database_url: str) -> None:
@@ -55,7 +27,7 @@ def test_upgrade_and_downgrade_cycle(temp_database_url: str) -> None:
         command.upgrade(cfg, "head")
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert version == "0001"
+        assert version == "0002"
 
         command.downgrade(cfg, "base")
         # Na base, o Alembic mantém a tabela alembic_version, mas sem linhas.
@@ -94,3 +66,8 @@ def test_app_role_privileges_match_matrix(temp_database_url: str, app_role: str)
         assert alembic_access is False
     finally:
         engine.dispose()
+
+
+def test_models_match_migrations(migrated_database_url: str) -> None:
+    """Modelos ORM e migrações não podem divergir (alembic check)."""
+    command.check(_alembic_config(migrated_database_url))
