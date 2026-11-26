@@ -9,7 +9,7 @@ são ``SecretStr`` e nunca aparecem em ``repr`` nem em respostas da API.
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/app/core/config.py -> raiz do repositório
@@ -34,3 +34,13 @@ class Settings(BaseSettings):
     database_url: SecretStr | None = None
     # Usuário administrador: só para migrações. Nunca usado pela API.
     migration_database_url: SecretStr | None = None
+
+    # Sessão web (ADR 0003): 30 min de inatividade, 12 h no máximo.
+    session_idle_minutes: int = Field(default=30, ge=1, le=24 * 60)
+    session_absolute_hours: int = Field(default=12, ge=1, le=7 * 24)
+
+    # Login (ADR 0003): limite por IP em memória e bloqueio progressivo por conta.
+    login_rate_limit_per_minute: int = Field(default=10, ge=1, le=1000)
+    login_max_failures: int = Field(default=5, ge=1, le=100)
+    login_lockout_base_seconds: int = Field(default=60, ge=1)
+    login_lockout_max_seconds: int = Field(default=15 * 60, ge=1)

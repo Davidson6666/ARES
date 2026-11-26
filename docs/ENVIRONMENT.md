@@ -43,6 +43,18 @@
 |---|---|---|
 | `postgres:18.6` | `sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42` | 26/11/2026 (`docker image inspect`) |
 
+## 3.2 Calibração do Argon2id (argon2-cffi 25.1.0)
+
+Medido em 26/11/2026, com a média de 5 verificações.
+
+| Parâmetros | Tempo |
+|---|---|
+| t=3, m=64 MiB, p=4 (padrão RFC 9106) | 48 ms |
+| t=6, m=64 MiB, p=4 | 78 ms |
+| **t=10, m=64 MiB, p=4 (escolhido, ADR 0003)** | **125 ms** |
+| t=4, m=128 MiB, p=4 | 120 ms |
+| t=3, m=256 MiB, p=4 | 194 ms |
+
 ## 4. Dependências candidatas do backend (não instaladas)
 
 Verificadas no PyPI em 26/11/2026 (versão mais recente, data de upload e declaração de suporte ao Python 3.14 nos classificadores). Isto **não** prova compatibilidade em uso real; a prova é a suíte de testes passando. As versões exatas serão fixadas no lockfile.
