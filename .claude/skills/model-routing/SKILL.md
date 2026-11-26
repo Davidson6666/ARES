@@ -51,7 +51,7 @@ Se a sessão atual for Haiku, planeje com subagente `model: "opus"`. Não tente 
 
 ## Restrições do projeto
 
-- `CLAUDE.md` seção 3: implementação é manual, feita pelo autor. Haiku não escreve código de funcionalidade sem pedido explícito.
+- `CLAUDE.md` seção 3: Claude implementa a pedido do autor. Código de funcionalidade fica com a sessão principal (Opus) ou com o plano aprovado; Haiku só faz trabalho mecânico listado acima.
 - Não dê a Haiku nenhum segredo, valor de `.env` ou credencial.
 - Subagente de Haiku não instala skill, plugin ou MCP. Essa decisão é do autor.
 - Nunca marque algo como implementado com base só na saída do Haiku. Use teste ou leitura do código.

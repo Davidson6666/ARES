@@ -22,7 +22,11 @@ Projeto de portfólio, sem operação real. Repositório ainda sem código de fu
 
 ## 3. Regras de trabalho
 
-- A implementação é manual, feita pelo autor. Não escreva código de funcionalidade sem pedido explícito. Quando pedido, entregue trechos pequenos e explique o porquê.
+- **Implementação feita pelo assistente (Claude), a pedido do autor.** Claude escreve o código de funcionalidade, testes e configuração. O autor revisa antes de cada merge em `main`.
+- Antes de codar uma fase: escopo confirmado na seção 21 da especificação; decisão difícil de reverter vira ADR (seção 4.3) antes da implementação.
+- Commits pequenos, um por mudança lógica, com prefixo da seção 10.
+- Ao terminar uma tarefa de código: rodar os testes e informar o resultado real. Sem teste passando, não marcar como implementado.
+- Mudança de arquitetura, dados, API ou segurança continua exigindo atualizar o documento correspondente e o histórico de versões.
 - Documentação antes de implementação. Mudança de arquitetura, dados, API ou segurança atualiza o documento correspondente. Decisão vira ADR.
 - Toda mudança relevante entra no histórico de versões do documento afetado.
 - Separe sempre: **confirmado**, **proposto**, **em aberto**.

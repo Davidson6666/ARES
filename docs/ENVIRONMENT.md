@@ -28,6 +28,7 @@
 | Node.js | v24.20.0 | `C:\Program Files\nodejs\node.exe` | — |
 | npm | 11.19.0 | `C:\Program Files\nodejs\npm.ps1` | — |
 | Git | 2.55.0.windows.2 | `C:\Program Files\Git\cmd\git.exe` | — |
+| uv (instalado via winget, `astral-sh.uv`) | 0.13.10 | `C:\Users\david\AppData\Local\Microsoft\WinGet\Packages\astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe\uv.exe` | Instalado em 26/11/2026. **Conflito de PATH:** `uv` resolve primeiro para `C:\Users\david\AppData\Local\hermes\bin\uv.exe` (0.12.13), instalado por outra ferramenta. Não alterado. |
 | PostgreSQL | 18.6 | `C:\Program Files\PostgreSQL\18\bin\` | Serviço `postgresql-x64-18` em execução. `psql` **não está no PATH**. |
 
 ## 3. Pontos em aberto
@@ -36,9 +37,40 @@
 - **`psql` fora do PATH:** usar caminho completo ou adicionar ao PATH (alteração de sistema, exige confirmação do autor).
 - **Python 3.14:** confirmar compatibilidade das dependências escolhidas (FastAPI, driver PostgreSQL, Argon2) antes de fixar versões.
 
-## 4. Histórico de versões
+## 4. Dependências candidatas do backend (não instaladas)
+
+Verificadas no PyPI em 26/11/2026 (versão mais recente, data de upload e declaração de suporte ao Python 3.14 nos classificadores). Isto **não** prova compatibilidade em uso real; a prova é a suíte de testes passando. As versões exatas serão fixadas no lockfile.
+
+| Pacote | Versão | Upload | Python 3.14 | Licença |
+|---|---|---|---|---|
+| fastapi | 0.165.0 | 2026-11-18 | Declarado | MIT |
+| uvicorn | 0.54.0 | 2026-09-25 | Declarado | BSD-3-Clause |
+| pydantic | 2.14.4 | 2026-11-19 | Declarado | MIT |
+| pydantic-settings | 2.16.3 | 2026-11-13 | Declarado | MIT |
+| sqlalchemy | 2.1.9 | 2026-11-16 | Declarado | MIT |
+| alembic | 1.20.1 | 2026-10-22 | Declarado | MIT |
+| psycopg | 3.3.9 | 2026-11-12 | Declarado | **LGPL-3.0-only** |
+| argon2-cffi | 25.1.0 | 2025-06-03 | Declarado | MIT |
+| pyotp | 2.12.1 | 2026-11-19 | Declarado | MIT |
+| structlog | 26.1.0 | 2026-06-06 | Declarado | MIT ou Apache-2.0 |
+| pytest | 9.2.0 | 2026-10-27 | Declarado | MIT |
+| httpx | 0.29.0 | 2026-11-26 | Declarado | BSD-3-Clause |
+| ruff | 0.17.6 | 2026-11-19 | Declarado | MIT |
+| mypy | 2.4.1 | 2026-10-28 | Declarado | MIT |
+| uv | 0.13.10 | 2026-11-24 | Declarado | MIT ou Apache-2.0 |
+| slowapi | 0.1.10 | 2026-06-13 | **Não declarado** | MIT |
+
+Pontos de atenção:
+
+- `psycopg` é LGPL-3.0. Decisão do autor em 26/11/2026: usar como biblioteca importada e registrar a análise antes da publicação (CLAUDE.md, seção 4.3).
+- `argon2-cffi` tem o último release em jun/2025. Confirmar se está mantido antes de fixar.
+- `slowapi` não declara Python 3.14. O rate limit (complemento, seção 4.1) precisa de outra solução. Em aberto.
+- `uv` não está instalado. A instalação altera o sistema e depende de confirmação do autor.
+
+## 5. Histórico de versões
 
 | Versão | Data | Alteração |
 |---|---|---|
 | 1.0 | 26/11/2026 | Primeira verificação do ambiente. |
 | 1.1 | 26/11/2026 | Registrada a escolha de PostgreSQL em Docker para desenvolvimento. |
+| 1.2 | 26/11/2026 | Tabela de dependências candidatas do backend verificadas no PyPI. |
