@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Status | Proposto |
+| Status | Aceito |
 | Data | 2026-11-26 |
 | Revisar até | 2026-12-10 |
 
