@@ -18,7 +18,7 @@ Nome de trabalho: **ARES**. Expansão provisória: *Adaptive Response & Event Se
 
 | Documento | Conteúdo |
 |---|---|
-| [docs/ARES_Especificacao_Geral_e_Arquitetura_Core_v1.1.docx](docs/ARES_Especificacao_Geral_e_Arquitetura_Core_v1.1.docx) | Especificação geral e arquitetura do Core. |
+| [docs/ARES_Especificacao_Geral_e_Arquitetura_Core_v1.1.md](docs/ARES_Especificacao_Geral_e_Arquitetura_Core_v1.1.md) | Especificação geral e arquitetura do Core. Conversão do [.docx original](docs/ARES_Especificacao_Geral_e_Arquitetura_Core_v1.1.docx). |
 | [docs/ARES_Core_v1.2_Complemento.md](docs/ARES_Core_v1.2_Complemento.md) | Complemento v1.2. Prevalece sobre a v1.1 em caso de conflito. |
 | [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) | Versões reais das ferramentas de desenvolvimento. |
 | [docs/adr/](docs/adr/) | Decisões arquiteturais. |

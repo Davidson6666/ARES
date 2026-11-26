@@ -7,7 +7,7 @@ Projeto de portfólio, sem operação real. Repositório ainda sem código de fu
 
 ## 1. Estado atual
 
-- **Confirmado:** especificação escrita. Especificação Geral v1.1 em `docs/ARES_Especificacao_Geral_e_Arquitetura_Core_v1.1.docx` (binário; extrair texto para ler) e Complemento v1.2 em `docs/ARES_Core_v1.2_Complemento.md`.
+- **Confirmado:** especificação escrita. Especificação Geral v1.1 em `docs/ARES_Especificacao_Geral_e_Arquitetura_Core_v1.1.md` (conversão do `.docx` original, mantido em `docs/`; conferida palavra a palavra em 26/11/2026; leia o `.md`) e Complemento v1.2 em `docs/ARES_Core_v1.2_Complemento.md`.
 - **Não implementado:** nenhum código de funcionalidade. Não marque nada como implementado sem código existente ou teste passando.
 - **Repositório:** Git iniciado em 26/11/2026, branch `main`, remoto `origin` = `https://github.com/Davidson6666/ARES.git`. Existem `README.md`, `LICENSE` (Apache-2.0), `.gitignore`, `.gitattributes`, `docs/ENVIRONMENT.md` e `docs/adr/` (vazio).
 - **Escopo da fase 01a:** seção 21.13 da v1.1, itens 1 a 4 (ver seção 11 deste arquivo).
