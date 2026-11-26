@@ -37,6 +37,12 @@
 - **`psql` fora do PATH:** usar caminho completo ou adicionar ao PATH (alteração de sistema, exige confirmação do autor).
 - **Python 3.14:** confirmar compatibilidade das dependências escolhidas (FastAPI, driver PostgreSQL, Argon2) antes de fixar versões.
 
+## 3.1 Imagens Docker
+
+| Imagem | Digest | Verificado em |
+|---|---|---|
+| `postgres:18.6` | `sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42` | 26/11/2026 (`docker image inspect`) |
+
 ## 4. Dependências candidatas do backend (não instaladas)
 
 Verificadas no PyPI em 26/11/2026 (versão mais recente, data de upload e declaração de suporte ao Python 3.14 nos classificadores). Isto **não** prova compatibilidade em uso real; a prova é a suíte de testes passando. As versões exatas serão fixadas no lockfile.
@@ -74,3 +80,4 @@ Pontos de atenção:
 | 1.0 | 26/11/2026 | Primeira verificação do ambiente. |
 | 1.1 | 26/11/2026 | Registrada a escolha de PostgreSQL em Docker para desenvolvimento. |
 | 1.2 | 26/11/2026 | Tabela de dependências candidatas do backend verificadas no PyPI. |
+| 1.3 | 26/11/2026 | Digest da imagem `postgres:18.6`. |

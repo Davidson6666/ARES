@@ -1,0 +1,28 @@
+# Banco de desenvolvimento do ARES (ADR 0001).
+# Credenciais vêm do arquivo .env na raiz (fora do Git). Modelo: .env.example.
+services:
+  db:
+    # Tag + digest: a tag sozinha pode ser republicada. Digest em docs/ENVIRONMENT.md.
+    image: postgres:18.6@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
+    environment:
+      # Superusuário: só bootstrap do init. Nem a API nem as migrações o usam.
+      POSTGRES_USER: ${POSTGRES_USER:?defina POSTGRES_USER no .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: ${POSTGRES_DB:?defina POSTGRES_DB no .env}
+      OWNER_DB_PASSWORD: ${OWNER_DB_PASSWORD:?defina OWNER_DB_PASSWORD no .env}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?defina APP_DB_PASSWORD no .env}
+    ports:
+      # Só localhost: não expor o banco à rede local. 5433 evita o serviço nativo na 5432.
+      - "127.0.0.1:5433:5432"
+    volumes:
+      # A imagem 18 guarda os dados em /var/lib/postgresql/18/docker.
+      - ares_pgdata:/var/lib/postgresql
+      - ./infrastructure/database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  ares_pgdata:

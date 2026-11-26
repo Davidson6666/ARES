@@ -25,16 +25,33 @@ Nome de trabalho: **ARES**. Expansão provisória: *Adaptive Response & Event Se
 
 ## Backend (desenvolvimento)
 
-Requer [uv](https://docs.astral.sh/uv/) e Python 3.14.
+Requer [uv](https://docs.astral.sh/uv/), Python 3.14 e Docker Desktop.
 
-```powershell
-cd backend
-uv sync
-uv run pytest
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
+1. Copie [.env.example](.env.example) para `.env` na raiz e troque **todas** as senhas. O `.env` fica fora do Git.
+2. Suba o banco (PostgreSQL 18.6 em `127.0.0.1:5433`, ver [ADR 0001](docs/adr/0001-postgresql-em-docker-para-desenvolvimento.md)):
 
-Configuração por variáveis `ARES_*` ou `backend/.env` (modelo em [backend/.env.example](backend/.env.example)).
+   ```powershell
+   docker compose up -d --wait
+   ```
+
+3. Aplique as migrações e rode a API:
+
+   ```powershell
+   cd backend
+   uv sync
+   uv run alembic upgrade head
+   uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+   ```
+
+Testes: `uv run pytest`. Os testes de banco só rodam com `ARES_TEST_ADMIN_DATABASE_URL` definido (usuário que pode criar bancos); cada teste cria e apaga um banco temporário.
+
+Usuários do banco:
+
+| Usuário | Uso | Permissões |
+|---|---|---|
+| `ares_admin` | Bootstrap do contêiner e testes de banco (`ARES_TEST_ADMIN_DATABASE_URL`) | Superusuário. Nem a API nem as migrações usam. |
+| `ares_owner` | Migrações (`ARES_MIGRATION_DATABASE_URL`) | Dono do banco e do schema; não é superusuário. |
+| `ares_app` | API (`ARES_DATABASE_URL`) | Só o que cada migração concede, tabela por tabela; sem DDL; só conecta no banco `ares`. |
 
 ## Stack proposta
 

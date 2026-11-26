@@ -1,27 +1,36 @@
 """Configuração do Core.
 
-Lida de variáveis de ambiente com prefixo ``ARES_`` e, opcionalmente, de um
-arquivo ``.env`` local (fora do Git; ver ``.gitignore``). Só valores não
-secretos podem ter valor padrão. Segredos são ``SecretStr`` e nunca aparecem
-em ``repr`` nem em respostas da API.
+Lida de variáveis de ambiente com prefixo ``ARES_`` e, opcionalmente, do
+arquivo ``.env`` na raiz do repositório (fora do Git; ver ``.gitignore`` e
+``.env.example``). Só valores não secretos podem ter valor padrão. Segredos
+são ``SecretStr`` e nunca aparecem em ``repr`` nem em respostas da API.
 """
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# backend/app/core/config.py -> raiz do repositório
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="ARES_",
-        env_file=".env",
-        extra="forbid",
+        env_file=REPO_ROOT / ".env",
+        # O .env é compartilhado com o docker-compose (chaves POSTGRES_*), e o
+        # pydantic-settings trataria essas chaves como campos extras. Por isso
+        # chaves desconhecidas são ignoradas. Consequência: erro de digitação
+        # em ARES_* não é detectado; o campo fica com o valor padrão.
+        extra="ignore",
     )
 
     env: Literal["dev", "test", "prod"] = "dev"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
-    # Usado a partir do item 3 (conexão PostgreSQL). Obrigatório só quando
-    # o banco for necessário; ausente hoje.
+    # Usuário da aplicação (ares_app): só leitura e escrita de dados.
     database_url: SecretStr | None = None
+    # Usuário administrador: só para migrações. Nunca usado pela API.
+    migration_database_url: SecretStr | None = None
