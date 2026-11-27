@@ -53,16 +53,8 @@ def route_label(request: Request) -> str:
     return f"{request.method} {template}"
 
 
-def require_session(
-    request: Request,
-    db: DbSession = Depends(get_db),
-    settings: Settings = Depends(get_settings),
-) -> AuthContext:
-    token = request.cookies.get(SESSION_COOKIE)
-    ctx = service.resolve_session(db, settings, token, utcnow()) if token else None
-    if ctx is None:
-        raise ApiError(401, "unauthenticated", "Autenticação necessária.")
-    # Operações mutáveis autenticadas por cookie exigem o token CSRF.
+def enforce_csrf(request: Request, db: DbSession, ctx: AuthContext) -> None:
+    """Operações mutáveis autenticadas por cookie exigem o token CSRF."""
     if request.method in _MUTATING and not service.csrf_matches(
         ctx.token, request.headers.get(CSRF_HEADER)
     ):
@@ -78,6 +70,18 @@ def require_session(
         )
         db.commit()
         raise ApiError(403, "csrf_failed", "Token CSRF ausente ou inválido.")
+
+
+def require_session(
+    request: Request,
+    db: DbSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> AuthContext:
+    token = request.cookies.get(SESSION_COOKIE)
+    ctx = service.resolve_session(db, settings, token, utcnow()) if token else None
+    if ctx is None:
+        raise ApiError(401, "unauthenticated", "Autenticação necessária.")
+    enforce_csrf(request, db, ctx)
     return ctx
 
 

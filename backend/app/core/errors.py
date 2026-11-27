@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.auth.crypto import MfaCryptoError
 from app.core.request_id import HEADER as REQUEST_ID_HEADER
 
 logger = structlog.get_logger("ares.errors")
@@ -130,7 +131,16 @@ def _db_error_fields(exc: Exception) -> dict[str, str | None]:
     }
 
 
+async def _mfa_crypto_error(request: Request, exc: Exception) -> JSONResponse:
+    # Chave trocada ou segredo corrompido: indisponibilidade, não erro do cliente.
+    logger.error("segredo MFA não pôde ser decifrado")
+    return error_response(
+        request, 503, "mfa_unavailable", "MFA indisponível. Contate o administrador."
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
+    app.add_exception_handler(MfaCryptoError, _mfa_crypto_error)
     app.add_exception_handler(ApiError, _api_error)
     app.add_exception_handler(DBAPIError, _database_unavailable)
     app.add_exception_handler(StarletteHTTPException, _http_exception)

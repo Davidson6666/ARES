@@ -5,7 +5,9 @@ comando, executado no servidor. Não existe rota HTTP para isso.
 
 Uso:
     uv run python -m app.cli create-admin --email admin@exemplo.local --display-name "Admin"
-    uv run python -m app.cli verify-audit
+    uv run python -m app.cli verify-audit [--expect-head <id>:<hash>]
+    uv run python -m app.cli generate-mfa-key
+    uv run python -m app.cli issue-recovery --email voce@exemplo.local
 
 Conecta como ``ares_owner`` (ARES_MIGRATION_DATABASE_URL). A senha é
 pedida no terminal (sem eco), duas vezes. ``--password-stdin``
@@ -23,7 +25,7 @@ from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session as DbSession
 
 from app.audit import service as audit
-from app.auth import passwords
+from app.auth import crypto, mfa, passwords
 from app.auth.models import Role, User, UserRole
 from app.auth.service import normalize_email
 from app.core.config import Settings
@@ -86,6 +88,29 @@ def create_admin(engine: Engine, email: str, display_name: str, password: str) -
         return user.id
 
 
+def issue_recovery(engine: Engine, email: str) -> str:
+    """Emite o token de recuperação (15 min, uso único). O token só existe
+    em claro aqui; no banco fica o SHA-256. Auditado como ``system``."""
+    email = normalize_email(email)
+    now = datetime.now(UTC)
+    with DbSession(engine) as db:
+        user = db.scalar(select(User).where(User.email == email))
+        if user is None or user.status != "active":
+            raise CliError("Conta inexistente ou desativada.")
+        token = mfa.issue_recovery_token(db, user.id, now)
+        audit.record(
+            db,
+            action="auth.recovery_issued",
+            result="success",
+            actor_type="system",
+            resource_type="user",
+            resource_id=str(user.id),
+            now=now,
+        )
+        db.commit()
+        return token
+
+
 def verify_audit(
     engine: Engine, expected_head: tuple[int, bytes] | None = None
 ) -> audit.VerifyResult:
@@ -120,6 +145,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     create.add_argument("--email", required=True)
     create.add_argument("--display-name", required=True)
     create.add_argument("--password-stdin", action="store_true")
+    sub.add_parser("generate-mfa-key", help="Gera uma chave para ARES_MFA_KEY.")
+    recovery = sub.add_parser("issue-recovery", help="Emite um token de recuperação de conta.")
+    recovery.add_argument("--email", required=True)
     verify = sub.add_parser("verify-audit", help="Confere o encadeamento da auditoria.")
     verify.add_argument(
         "--expect-head",
@@ -127,6 +155,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "remoção das últimas entradas.",
     )
     args = parser.parse_args(argv)
+
+    if args.command == "generate-mfa-key":
+        # Só imprime; nada é gravado. Coloque em ARES_MFA_KEY no .env.
+        print(crypto.generate_key())
+        return 0
 
     # Usa o dono do schema (ares_owner), não o usuário da API: o ares_app não
     # tem INSERT em users nem em user_roles (ADR 0003).
@@ -159,6 +192,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 3
+    if args.command == "issue-recovery":
+        try:
+            token = issue_recovery(engine, args.email)
+        except CliError as exc:
+            print(f"Erro: {exc}", file=sys.stderr)
+            return 1
+        finally:
+            engine.dispose()
+        print(f"Token de recuperação (válido por {mfa.RECOVERY_TOKEN_MINUTES} min, uso único):")
+        print(token)
+        return 0
     try:
         user_id = create_admin(
             engine, args.email, args.display_name, _read_password(args.password_stdin)

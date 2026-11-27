@@ -47,6 +47,36 @@ def csrf_matches(session_token: str, presented: str | None) -> bool:
     )
 
 
+def register_failed_attempt(user: User, settings: Settings, now: datetime) -> bool:
+    """Conta uma falha de autenticação (senha OU segundo fator) contra a conta
+    e aplica o bloqueio progressivo. Devolve ``True`` se bloqueou agora.
+
+    O contador só é zerado quando o login COMPLETA (``clear_failures``): senha
+    certa sozinha não apaga os palpites de MFA já feitos.
+    """
+    user.failed_login_count += 1
+    excess = user.failed_login_count - settings.login_max_failures
+    locked_now = excess >= 0
+    if locked_now:
+        delay = min(
+            settings.login_lockout_base_seconds * (2**excess),
+            settings.login_lockout_max_seconds,
+        )
+        user.locked_until = now + timedelta(seconds=delay)
+    user.updated_at = now
+    return locked_now
+
+
+def clear_failures(user: User, now: datetime) -> None:
+    user.failed_login_count = 0
+    user.locked_until = None
+    user.updated_at = now
+
+
+def is_locked(user: User, now: datetime) -> bool:
+    return user.locked_until is not None and user.locked_until > now
+
+
 @dataclass(frozen=True)
 class LoginOutcome:
     """Resultado do login. ``user`` só é preenchido em caso de sucesso.
@@ -78,25 +108,17 @@ def authenticate(
     if user.status != "active":
         passwords.verify_dummy(password)
         return LoginOutcome(None, user.id, "account_disabled")
-    if user.locked_until is not None and user.locked_until > now:
+    if is_locked(user, now):
         passwords.verify_dummy(password)
         return LoginOutcome(None, user.id, "account_locked")
 
     if not passwords.verify_password(user.password_hash, password):
-        user.failed_login_count += 1
-        excess = user.failed_login_count - settings.login_max_failures
-        locked_now = excess >= 0
-        if locked_now:
-            delay = min(
-                settings.login_lockout_base_seconds * (2**excess),
-                settings.login_lockout_max_seconds,
-            )
-            user.locked_until = now + timedelta(seconds=delay)
-        user.updated_at = now
+        locked_now = register_failed_attempt(user, settings, now)
         return LoginOutcome(None, user.id, "invalid_password", locked_now=locked_now)
 
-    user.failed_login_count = 0
-    user.locked_until = None
+    # Senha certa NÃO zera o contador: quem tem MFA ainda precisa do segundo
+    # fator, e os palpites de MFA contam na mesma conta (clear_failures, ao
+    # concluir o login).
     if passwords.needs_rehash(user.password_hash):
         user.password_hash = passwords.hash_password(password)
     user.updated_at = now

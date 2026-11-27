@@ -8,14 +8,17 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -108,3 +111,78 @@ class Session(Base):
     idle_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     absolute_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MfaFactor(Base):
+    __tablename__ = "mfa_factors"
+    __table_args__ = (
+        CheckConstraint("type IN ('totp')", name="type"),
+        CheckConstraint("status IN ('pending', 'active', 'revoked')", name="status"),
+        CheckConstraint(r"secret_ref ~ '^env:v[0-9]+$'", name="secret_ref_format"),
+        Index(
+            "uq_mfa_factors_one_active",
+            "user_id",
+            "type",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), index=True
+    )
+    type: Mapped[str] = mapped_column(String(16))
+    secret_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
+    secret_ref: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16))
+    last_used_step: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MfaChallenge(Base):
+    __tablename__ = "mfa_challenges"
+    __table_args__ = (
+        CheckConstraint("purpose IN ('verify', 'enroll')", name="purpose"),
+        CheckConstraint("attempts >= 0", name="attempts"),
+        CheckConstraint("octet_length(token_hash) = 32", name="token_hash_length"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), index=True
+    )
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    purpose: Mapped[str] = mapped_column(String(16))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RecoveryCode(Base):
+    __tablename__ = "recovery_codes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), index=True
+    )
+    code_hash: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RecoveryToken(Base):
+    __tablename__ = "recovery_tokens"
+    __table_args__ = (CheckConstraint("octet_length(token_hash) = 32", name="token_hash_length"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), index=True
+    )
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

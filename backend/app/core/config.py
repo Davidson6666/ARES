@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # Usuário administrador: só para migrações. Nunca usado pela API.
     migration_database_url: SecretStr | None = None
 
+    # Chave AES-GCM (32 bytes em base64) que cifra os segredos TOTP (ADR 0005).
+    # Gere com: uv run python -m app.cli generate-mfa-key. Sem ela, o MFA não
+    # funciona e o login de papéis administrativos é recusado (503).
+    mfa_key: SecretStr | None = None
+
     # Sessão web (ADR 0003): 30 min de inatividade, 12 h no máximo.
     session_idle_minutes: int = Field(default=30, ge=1, le=24 * 60)
     session_absolute_hours: int = Field(default=12, ge=1, le=7 * 24)
@@ -44,3 +49,6 @@ class Settings(BaseSettings):
     login_max_failures: int = Field(default=5, ge=1, le=100)
     login_lockout_base_seconds: int = Field(default=60, ge=1)
     login_lockout_max_seconds: int = Field(default=15 * 60, ge=1)
+
+    # Recuperação de conta (ADR 0005): limite por IP, em memória.
+    recovery_rate_limit_per_minute: int = Field(default=5, ge=1, le=1000)
