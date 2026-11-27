@@ -38,6 +38,9 @@ async def request_id_middleware(
         )
         raise
     response.headers[HEADER] = request_id
+    if request.url.path.startswith("/api/v1/auth/"):
+        # Respostas de autenticação carregam token CSRF, códigos e segredos.
+        response.headers["Cache-Control"] = "no-store"
     log.info(
         "request",
         method=request.method,

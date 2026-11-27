@@ -4,12 +4,14 @@ A API roda como ares_app (ver fixture ``app_engine``). Os testes de
 segurança do CLAUDE.md, seção 9.2, que este item cobre estão marcados.
 """
 
+import base64
 import io
 import threading
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
+import pyotp
 import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
@@ -18,9 +20,9 @@ from sqlalchemy import Engine, select, text, update
 from sqlalchemy.orm import Session as DbSession
 
 from app import cli
-from app.auth import passwords, service
+from app.auth import crypto, passwords, service
 from app.auth.dependencies import CSRF_HEADER, SESSION_COOKIE, require_session
-from app.auth.models import Role, Session, User, UserRole
+from app.auth.models import MfaFactor, Role, Session, User, UserRole
 from app.core.config import Settings
 from app.main import create_app
 
@@ -29,8 +31,13 @@ pytestmark = pytest.mark.db
 PASSWORD = "uma-senha-longa-de-teste"
 
 
+# Chave fixa só para os testes (32 bytes em base64). Nunca usar fora deles.
+TEST_MFA_KEY = base64.b64encode(bytes(range(32))).decode("ascii")
+
+
 def _settings(**overrides: object) -> Settings:
-    return Settings(_env_file=None, env="test", **overrides)  # type: ignore[arg-type]
+    values: dict[str, object] = {"mfa_key": SecretStr(TEST_MFA_KEY)} | overrides
+    return Settings(_env_file=None, env="test", **values)  # type: ignore[arg-type]
 
 
 def make_user(
@@ -69,6 +76,53 @@ def use_cookie(client: TestClient, token: str) -> None:
     """Troca o cookie de sessão do cliente por ``token`` (jar limpo antes)."""
     client.cookies.clear()
     client.cookies.set(SESSION_COOKIE, token)
+
+
+def add_factor(engine: Engine, user_id: uuid.UUID, status: str = "active") -> str:
+    """Cria um fator TOTP direto no banco e devolve o segredo (para o teste
+    gerar códigos)."""
+    secret = pyotp.random_base32()
+    with DbSession(engine) as db:
+        db.add(
+            MfaFactor(
+                id=uuid.uuid4(),
+                user_id=user_id,
+                type="totp",
+                secret_ciphertext=crypto.encrypt_secret(
+                    crypto.parse_key(TEST_MFA_KEY), user_id, "totp", secret
+                ),
+                secret_ref=crypto.KEY_REF,
+                status=status,
+                created_at=datetime.now(UTC),
+            )
+        )
+        db.commit()
+    return secret
+
+
+def fresh_code(engine: Engine, secret: str) -> str:
+    """Código válido agora, liberando o step (cada teste de login repetido
+    ocorre no mesmo período de 30 s; o reuso tem testes próprios)."""
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE mfa_factors SET last_used_step = NULL"))
+    return pyotp.TOTP(secret).now()
+
+
+def login_mfa(
+    client: TestClient, engine: Engine, email: str, secret: str, password: str = PASSWORD
+) -> dict[str, object]:
+    r = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    assert r.status_code == 200 and r.json()["status"] == "mfa_required", r.text
+    r = client.post("/api/v1/auth/mfa/verify", json={"code": fresh_code(engine, secret)})
+    assert r.status_code == 200, r.text
+    body: dict[str, object] = r.json()
+    return body
+
+
+def login_admin(client: TestClient, engine: Engine, email: str) -> dict[str, object]:
+    """Cria um super_admin com TOTP ativo e entra pelos dois passos."""
+    uid = make_user(engine, email, roles=("super_admin",))
+    return login_mfa(client, engine, email, add_factor(engine, uid))
 
 
 def login(client: TestClient, email: str, password: str = PASSWORD) -> dict[str, object]:
@@ -303,8 +357,7 @@ def test_permissions_requires_roles_manage(client: TestClient, admin_engine: Eng
 
 
 def test_permissions_cursor_pagination(client: TestClient, admin_engine: Engine) -> None:
-    make_user(admin_engine, "root@ares.test", roles=("super_admin",))
-    login(client, "root@ares.test")
+    login_admin(client, admin_engine, "root@ares.test")
     names: list[str] = []
     cursor = None
     while True:
@@ -334,8 +387,7 @@ def test_permissions_cursor_pagination(client: TestClient, admin_engine: Engine)
 def test_permissions_rejects_bad_query(
     client: TestClient, admin_engine: Engine, params: dict[str, str], status: int, code: str
 ) -> None:
-    make_user(admin_engine, "q@ares.test", roles=("super_admin",))
-    login(client, "q@ares.test")
+    login_admin(client, admin_engine, "q@ares.test")
     r = client.get("/api/v1/permissions", params=params)
     assert r.status_code == status
     assert r.json()["code"] == code
@@ -503,8 +555,7 @@ def test_hasher_busy_returns_503(app_engine: Engine, admin_engine: Engine) -> No
 
 
 def test_cursor_too_long_is_400(client: TestClient, admin_engine: Engine) -> None:
-    make_user(admin_engine, "cur@ares.test", roles=("super_admin",))
-    login(client, "cur@ares.test")
+    login_admin(client, admin_engine, "cur@ares.test")
     r = client.get("/api/v1/permissions", params={"cursor": "a" * 201})
     assert r.status_code == 400
     assert r.json()["code"] == "invalid_cursor"

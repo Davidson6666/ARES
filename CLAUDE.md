@@ -65,6 +65,8 @@ Projeto de portfólio, sem operação real. Repositório ainda sem código de fu
 | Verificação de licença das dependências | Análise por dependência | Vincular GPL sem análise | Antes da primeira publicação pública |
 | Acesso a `/ready` (complemento 3.1 diz público só `/health`; v1.1 seção 15 diz "interno/admin conforme implantação") | Restringir na implantação (bind local, proxy) ou exigir autenticação | Hoje é público, com corpo mínimo e sem motivo técnico | Item 4 da 21.13 |
 | Formato do corpo de erro: plano (complemento 3.4) × aninhado em `error` (exemplo da v1.1, 15.2) | Implementado plano, porque o complemento prevalece | Baixo; a 15.2 da v1.1 não foi corrigida explicitamente | Próxima revisão da spec |
+| `DELETE /auth/mfa` aceita "próprio usuário ou `users.write`" (complemento 3.2), mas a rota não tem `{id}` | Rota própria para administrador desativar o MFA de outro usuário, ou corrigir o texto do complemento | Só o próprio usuário pode desativar, e papéis administrativos não podem | Antes da gestão de usuários (01b) |
+| `secret_ref` "aponta para cofre" (complemento 2.1; seção 6.1 deste arquivo) × ADR 0005: guarda a versão da chave, e o segredo cifrado fica em `secret_ciphertext` | Alinhar o complemento e a seção 6.1 ao ADR 0005 | Documentos divergentes | Próxima revisão da spec |
 | Parâmetro de query desconhecido → 400 (complemento 3.4) | Aplicar a todas as rotas ou só às de `/api/v1` | `/health?x=1` responde 200 hoje | Item 4 da 21.13 |
 
 **Não preencha a seção 5 do complemento sem o autor pedir.**

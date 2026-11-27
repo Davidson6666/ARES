@@ -49,6 +49,15 @@ Requer [uv](https://docs.astral.sh/uv/), Python 3.14 e Docker Desktop.
    uv run python -m app.cli create-admin --email voce@exemplo.local --display-name "Seu Nome"
    ```
 
+MFA e recuperação de conta (ADR 0005):
+
+```powershell
+uv run python -m app.cli generate-mfa-key        # coloque o resultado em ARES_MFA_KEY, no .env
+uv run python -m app.cli issue-recovery --email voce@exemplo.local   # token de 15 min, uso único
+```
+
+`super_admin` e `security_admin` só entram com TOTP: no primeiro login, a API devolve `{"status":"mfa_required","purpose":"enroll"}` e o cadastro (`POST /api/v1/auth/mfa/enroll` e `/confirm`) conclui o login. O token de recuperação é entregue só pelo CLI, no servidor; ele troca a senha e encerra as sessões, mas **não** desativa o MFA.
+
 Conferir a integridade da trilha de auditoria (código de saída 3 se a cadeia estiver quebrada):
 
 ```powershell

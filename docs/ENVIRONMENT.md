@@ -71,6 +71,7 @@ Verificadas no PyPI em 26/11/2026 (versão mais recente, data de upload e declar
 | argon2-cffi | 25.1.0 | 2025-06-03 | Declarado | MIT |
 | pyotp | 2.12.1 | 2026-11-19 | Declarado | MIT |
 | structlog | 26.1.0 | 2026-06-06 | Declarado | MIT ou Apache-2.0 |
+| cryptography | 50.0.2 | (verificar no PyPI) | Não verificado | Apache-2.0 ou BSD-3-Clause |
 | pytest | 9.2.0 | 2026-10-27 | Declarado | MIT |
 | httpx | 0.29.0 | 2026-11-26 | Declarado | BSD-3-Clause |
 | ruff | 0.17.6 | 2026-11-19 | Declarado | MIT |

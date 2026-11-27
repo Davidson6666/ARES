@@ -3,7 +3,7 @@
 import base64
 import binascii
 import re
-import uuid
+from typing import Literal
 
 import structlog
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from app.audit import service as audit
-from app.auth import passwords, service
+from app.auth import mfa, passwords, service, session_flow
 from app.auth.dependencies import (
     SESSION_COOKIE,
     allow_query,
@@ -25,6 +25,7 @@ from app.auth.dependencies import (
 )
 from app.auth.models import Permission
 from app.auth.service import AuthContext
+from app.auth.session_flow import CHALLENGE_COOKIE, MeResponse, build_me, request_id
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.core.rate_limit import client_key
@@ -32,11 +33,6 @@ from app.core.rate_limit import client_key
 router = APIRouter(prefix="/api/v1")
 
 log = structlog.get_logger("ares.auth")
-
-
-def _request_id(request: Request) -> str | None:
-    rid: str | None = getattr(request.state, "request_id", None)
-    return rid
 
 
 _INVALID_CREDENTIALS = ApiError(401, "invalid_credentials", "E-mail ou senha inválidos.")
@@ -57,31 +53,18 @@ class LoginRequest(BaseModel):
         return value
 
 
-class MeResponse(BaseModel):
-    id: uuid.UUID
-    email: str
-    display_name: str
-    roles: list[str]
-    permissions: list[str]
-    # O cliente guarda em memória e envia em X-CSRF-Token nas mutações.
-    csrf_token: str
+class MfaChallengeResponse(BaseModel):
+    """Senha correta, segundo fator pendente. Não há sessão ainda."""
 
-
-def _me(db: DbSession, ctx_user_id: uuid.UUID, email: str, name: str, token: str) -> MeResponse:
-    roles, perms = service.roles_and_permissions(db, ctx_user_id)
-    return MeResponse(
-        id=ctx_user_id,
-        email=email,
-        display_name=name,
-        roles=roles,
-        permissions=perms,
-        csrf_token=service.csrf_token_for(token),
-    )
+    status: Literal["mfa_required"] = "mfa_required"
+    # verify: informar o código TOTP (ou um código de recuperação).
+    # enroll: papel administrativo sem TOTP; cadastrar e confirmar um.
+    purpose: Literal["verify", "enroll"]
 
 
 @router.post(
     "/auth/login",
-    response_model=MeResponse,
+    response_model=MeResponse | MfaChallengeResponse,
     dependencies=[Depends(require_json), Depends(allow_query())],
 )
 def login(
@@ -90,13 +73,13 @@ def login(
     response: Response,
     db: DbSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
-) -> MeResponse:
+) -> MeResponse | MfaChallengeResponse:
     retry_after = request.app.state.login_limiter.hit(
         client_key(request.client.host if request.client else None)
     )
     if retry_after is not None:
         # Só log operacional: sob ataque, não gravar no banco a cada tentativa.
-        log.warning("login.rate_limited", request_id=_request_id(request))
+        log.warning("login.rate_limited", request_id=request_id(request))
         raise ApiError(
             429,
             "rate_limited",
@@ -108,7 +91,7 @@ def login(
     try:
         outcome = service.authenticate(db, settings, body.email, body.password, now)
     except passwords.HasherBusy:
-        log.warning("login.busy", request_id=_request_id(request))
+        log.warning("login.busy", request_id=request_id(request))
         raise ApiError(
             503, "busy", "Serviço ocupado. Tente novamente.", headers={"Retry-After": "1"}
         ) from None
@@ -124,42 +107,61 @@ def login(
             resource_type="user" if outcome.user_id else None,
             resource_id=str(outcome.user_id) if outcome.user_id else None,
             reason=outcome.reason,
-            request_id=_request_id(request),
+            request_id=request_id(request),
             details={"locked_now": True} if outcome.locked_now else None,
             now=now,
         )
         db.commit()
         raise _INVALID_CREDENTIALS
 
-    # Fixação de sessão: qualquer sessão anterior deste navegador é revogada
-    # e um identificador novo é sempre emitido.
-    previous = request.cookies.get(SESSION_COOKIE)
-    if previous:
-        service.revoke_session_by_token(db, previous, now)
-    token = service.create_session(db, settings, user, request.headers.get("user-agent"), now)
-    audit.record(
-        db,
-        action="auth.login",
-        result="success",
-        actor_type="user",
-        actor_user_id=user.id,
-        resource_type="user",
-        resource_id=str(user.id),
-        request_id=_request_id(request),
-        now=now,
-    )
-    db.commit()
+    has_factor = mfa.active_factor(db, user.id) is not None
+    if has_factor or mfa.is_admin(db, user.id):
+        try:
+            mfa.load_key(settings.mfa_key.get_secret_value() if settings.mfa_key else None)
+        except mfa.MfaUnavailable:
+            audit.record(
+                db,
+                action="auth.login",
+                result="failure",
+                actor_type="user",
+                actor_user_id=user.id,
+                resource_type="user",
+                resource_id=str(user.id),
+                reason="mfa_unavailable",
+                request_id=request_id(request),
+                now=now,
+            )
+            db.commit()
+            raise ApiError(
+                503, "mfa_unavailable", "MFA indisponível. Contate o administrador."
+            ) from None
+        purpose = "verify" if has_factor else "enroll"
+        challenge = mfa.create_challenge(db, user.id, purpose, now)
+        audit.record(
+            db,
+            action="mfa.challenge",
+            result="success",
+            actor_type="user",
+            actor_user_id=user.id,
+            resource_type="user",
+            resource_id=str(user.id),
+            request_id=request_id(request),
+            details={"purpose": purpose},
+            now=now,
+        )
+        db.commit()
+        response.set_cookie(
+            CHALLENGE_COOKIE,
+            challenge,
+            max_age=mfa.CHALLENGE_MINUTES * 60,
+            path="/",
+            secure=True,
+            httponly=True,
+            samesite="strict",
+        )
+        return MfaChallengeResponse(purpose=purpose)
 
-    response.set_cookie(
-        SESSION_COOKIE,
-        token,
-        max_age=settings.session_absolute_hours * 3600,
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="strict",
-    )
-    return _me(db, user.id, user.email, user.display_name, token)
+    return session_flow.establish_session(db, settings, request, response, user, now)
 
 
 @router.post("/auth/logout", status_code=204, dependencies=[Depends(allow_query())])
@@ -179,7 +181,7 @@ def logout(
         actor_user_id=ctx.user.id,
         resource_type="session",
         resource_id=str(session_id) if session_id else None,
-        request_id=_request_id(request),
+        request_id=request_id(request),
         now=now,
     )
     db.commit()
@@ -190,7 +192,7 @@ def logout(
 
 @router.get("/me", response_model=MeResponse, dependencies=[Depends(allow_query())])
 def me(ctx: AuthContext = Depends(require_session), db: DbSession = Depends(get_db)) -> MeResponse:
-    return _me(db, ctx.user.id, ctx.user.email, ctx.user.display_name, ctx.token)
+    return build_me(db, ctx.user, ctx.token)
 
 
 class PermissionItem(BaseModel):
