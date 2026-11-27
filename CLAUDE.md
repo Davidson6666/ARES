@@ -67,9 +67,6 @@ Projeto de portfólio, sem operação real. Repositório ainda sem código de fu
 | Formato do corpo de erro: plano (complemento 3.4) × aninhado em `error` (exemplo da v1.1, 15.2) | Implementado plano, porque o complemento prevalece | Baixo; a 15.2 da v1.1 não foi corrigida explicitamente | Próxima revisão da spec |
 | `DELETE /auth/mfa` aceita "próprio usuário ou `users.write`" (complemento 3.2), mas a rota não tem `{id}` | Rota própria para administrador desativar o MFA de outro usuário, ou corrigir o texto do complemento | Só o próprio usuário pode desativar, e papéis administrativos não podem | Antes da gestão de usuários (01b) |
 | `secret_ref` "aponta para cofre" (complemento 2.1; seção 6.1 deste arquivo) × ADR 0005: guarda a versão da chave, e o segredo cifrado fica em `secret_ciphertext` | Alinhar o complemento e a seção 6.1 ao ADR 0005 | Documentos divergentes | Próxima revisão da spec |
-| `POST /agents/enroll` é pública, mas o complemento 3.1 e a seção 7.1 deste arquivo dizem que o público tem só `/health` e rotas de auth; a rota também não está na tabela 3.2 | Corrigir o complemento (3.1 e 3.2) e o histórico, ou mover a rota para o prefixo de auth | Rota pública com rate limit e corpo de 16 KB, sem previsão na spec | Próxima revisão da spec |
-| Evento acima de 64 KB e campo desconhecido no topo: o complemento 3.4 e a seção 6 pedem 413 e 422, mas a 3.3 diz que lote parcialmente inválido não derruba os válidos | Manter `rejected` dentro do 202 e corrigir o complemento, ou voltar ao 413/422 do lote inteiro | Implementado como `rejected` (ADR 0006) | Próxima revisão da spec |
-| `POST /events` aceita "agente ou engine" (complemento 3.2); só existe autenticação de agente | Autenticação de engine com a fase de módulos | Engine não consegue enviar eventos | Fase de módulos |
 | Parâmetro de query desconhecido → 400 (complemento 3.4) | Aplicar a todas as rotas ou só às de `/api/v1` | `/health?x=1` responde 200 hoje | Item 4 da 21.13 |
 
 **Não preencha a seção 5 do complemento sem o autor pedir.**
@@ -121,7 +118,7 @@ Projeto de portfólio, sem operação real. Repositório ainda sem código de fu
 | Humano (painel) | Cookie de sessão + CSRF em mutações. |
 | Agente | `Authorization: Agent <credencial>`. Rotacionável. **Nunca recebe permissão administrativa.** |
 | Engine interno | Identidade de serviço local. |
-| Público | Apenas `/health` e rotas de auth com rate limit. |
+| Público | Apenas `/health`, rotas de auth e `POST /agents/enroll` (autenticada pelo token de enrolamento), com rate limit. |
 
 ### 7.2 Regras transversais
 
@@ -149,7 +146,8 @@ Prefixo `/api/v1`. Principais:
 | `POST /modules/{id}/heartbeat` | módulo autenticado | 202 |
 | `GET /modules/{id}`, `PATCH /modules/{id}/config` | `modules.read` / `modules.configure` | 200 |
 | `POST /agents` (token de enrolamento, uso único, 24 h), `POST /agents/{id}/rotate`, `POST /agents/{id}/revoke` | `modules.configure` | 201 / 200 |
-| `POST /events` (máx. 100 por lote) | agente ou engine | 202 |
+| `POST /agents/enroll` | público, token de enrolamento | 201 |
+| `POST /events` (máx. 100 por lote) | agente (engine na fase de módulos) | 202 |
 | `GET /events/{event_id}` | `events.read` | 200 |
 | `GET /config`, `PATCH /config/{key}` | `settings.manage` (PATCH com auditoria) | 200 |
 
@@ -162,7 +160,7 @@ Prefixo `/api/v1`. Principais:
 | 403 | Identidade válida sem permissão. |
 | 404 | Inexistente **ou** fora do escopo (não revelar existência). |
 | 409 | Conflito de estado ou versão; reuso de `Idempotency-Key` com corpo diferente. |
-| 413 | Acima do limite: 64 KB por evento; 2 MB por lote. |
+| 413 | Corpo acima de 2 MB. Evento acima de 64 KB vira `rejected` no 202. |
 | 422 | JSON válido, mas falha no esquema (tipo, faixa, formato, obrigatório, campo extra). |
 | 429 | Limite de taxa, com `Retry-After`. |
 | 503 | Dependência essencial (ex.: banco) indisponível. |
@@ -187,7 +185,7 @@ Corpo de erro padrão: `code` (snake_case, estável), `message` (segura para exi
 - Envelope até 64 KB; lote até 2 MB e 100 eventos.
 - Campo novo opcional: aditivo, sem nova versão.
 - Remover ou mudar significado: incrementar `schema_version` e manter convivência de 90 dias.
-- Campo desconhecido em `data`: ignorar. Campo desconhecido no topo: 422.
+- Campo desconhecido em `data`: ignorar. Campo desconhecido no topo: evento `rejected` no 202.
 
 ## 9. Segurança
 

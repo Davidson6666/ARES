@@ -78,7 +78,8 @@
 | Humano (dashboard) | Cookie de sessão + CSRF | Operações mutáveis exigem cabeçalho CSRF. |
 | Agente | Credencial de agente (`Authorization: Agent <credencial>`) | Rotacionável. Nunca recebe permissão administrativa. |
 | Engine interno | Identidade de serviço local | Em monólito, é chamada direta; quando houver separação de processo, usar credencial de serviço. |
-| Público | Nenhuma | Apenas `/health` e rotas de auth com rate limit. |
+| Público | Nenhuma | Apenas `/health`, rotas de auth e `POST /agents/enroll`, todas com rate limit. |
+| Agente sem credencial (enrolamento) | Token de enrolamento (uso único, validade 24 h, guardado só como hash) | A rota `POST /agents/enroll` é pública porque o agente ainda não tem credencial; o token é a autenticação. |
 
 ### 3.2 Endpoints adicionados
 
@@ -105,9 +106,10 @@
 | `GET /api/v1/modules/{id}` | Detalhe e histórico resumido | `modules.read` | Humano | 200 |
 | `PATCH /api/v1/modules/{id}/config` | Alterar configuração não secreta | `modules.configure` | Humano | 200 |
 | `POST /api/v1/agents` | Gerar token de enrolamento (uso único, validade 24 h) | `modules.configure` | Humano | 201 |
+| `POST /api/v1/agents/enroll` | Trocar o token de enrolamento pela credencial do agente (exige termo de autorização vigente) | — | Público, autenticado pelo token de enrolamento, com rate limit | 201 |
 | `POST /api/v1/agents/{id}/rotate` | Rotacionar credencial | `modules.configure` | Humano | 200 |
 | `POST /api/v1/agents/{id}/revoke` | Revogar credencial | `modules.configure` | Humano | 200 |
-| `POST /api/v1/events` | Ingestão de lote de eventos (máx. 100 por lote) | — | Agente ou engine | 202 |
+| `POST /api/v1/events` | Ingestão de lote de eventos (máx. 100 por lote) | — | Agente (engine na fase de módulos) | 202 |
 | `GET /api/v1/events/{event_id}` | Consultar evento | `events.read` | Humano | 200 |
 | `GET /api/v1/config` | Configurações não secretas | `settings.manage` | Humano | 200 |
 | `PATCH /api/v1/config/{key}` | Alterar configuração global | `settings.manage` | Humano + auditoria | 200 |
@@ -117,7 +119,7 @@
 - **Bootstrap do administrador inicial:** feito por **comando de linha de comando** executado no servidor, não por endpoint HTTP. Não existe rota pública para criar o primeiro administrador.
 - **Paginação por cursor** em todas as listas. Parâmetros: `limit` (padrão 50, máximo 200), `cursor` opaco.
 - **Idempotency-Key:** obrigatório em `POST` de criação de usuário, agente e ingestão de eventos. Retenção de 24 h.
-- **Ingestão de eventos (202):** a resposta lista o resultado por evento: `accepted`, `duplicate` ou `rejected`, com código de erro estável. Um lote parcialmente inválido não derruba os eventos válidos.
+- **Ingestão de eventos (202):** a resposta lista o resultado por evento: `accepted`, `duplicate` ou `rejected`, com código de erro estável. Um lote parcialmente inválido não derruba os eventos válidos. Por isso, falha **de um evento** (acima de 64 KB, campo desconhecido no topo, campo inválido) vira `rejected` com código estável dentro do 202. Só falha **do lote** tem status próprio: corpo acima de 2 MB (413), JSON malformado (400), formato do lote inválido, lote vazio ou com mais de 100 eventos (422).
 - **Campos de escrita:** lista explícita de campos aceitos em cada rota. Campos extras são rejeitados (proteção contra *mass assignment*, ver seção 4).
 
 ### 3.4 Códigos de erro — critério de uso
@@ -130,7 +132,7 @@
 | 403 | Identidade válida sem permissão. |
 | 404 | Recurso inexistente **ou** fora do escopo do usuário (para não revelar existência). |
 | 409 | Conflito de estado, versão ou reuso de `Idempotency-Key` com corpo diferente. |
-| 413 | Corpo acima do limite (64 KB por evento; 2 MB por lote). |
+| 413 | Corpo acima do limite (2 MB por lote). O limite de 64 KB por evento não gera 413: o evento vira `rejected` no 202 (seção 3.3). |
 | 429 | Limite de taxa excedido, com cabeçalho `Retry-After`. |
 | 503 | Dependência essencial (banco, por exemplo) indisponível. |
 
@@ -198,7 +200,7 @@ Erro padrão de corpo: `code` (estável, em snake_case), `message` (segura para 
 **Compatibilidade:**
 - Mudança **aditiva** (campo opcional novo) não exige nova versão de esquema.
 - Mudança que remove ou altera o significado de campo exige `schema_version` incrementado e período de convivência de pelo menos 90 dias.
-- Campo desconhecido em `data` é ignorado; campo desconhecido no topo do envelope é rejeitado com 422.
+- Campo desconhecido em `data` é ignorado; campo desconhecido no topo do envelope rejeita o evento (`rejected` com código estável no 202, seção 3.3); no endpoint de eventos não derruba o lote.
 
 **Observação:** o campo `severity` do evento e o de alerta são coisas diferentes. Esta distinção evita confundir "a fonte disse que é grave" com "o motor concluiu que é grave".
 
@@ -234,3 +236,4 @@ Erro padrão de corpo: `code` (estável, em snake_case), `message` (segura para 
 | 1.0 | 26/11/2026 | Especificação geral e arquitetura proposta do ARES Core. |
 | 1.1 | 26/11/2026 | Checklist de pré-implementação, critérios para iniciar e primeira iteração. |
 | 1.2 | 26/11/2026 | Correções de consistência; decisões provisórias para as questões em aberto; modelo de dados completo; adendo à API; adendo ao modelo de ameaças; seção de privacidade e LGPD deixada em branco; envelope de evento v1; ajustes ao checklist. |
+| 1.2.1 | 27/11/2026 | Alinhada ao ADR 0006 (fase 01b): `POST /agents/enroll` público, autenticado pelo token de enrolamento (3.1 e 3.2); falha por evento vira `rejected` no 202, com 413/422 só para falha do lote (3.3, 3.4 e 6); `POST /events` só com agente, engine na fase de módulos (3.2). |
