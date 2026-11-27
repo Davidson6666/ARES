@@ -86,6 +86,16 @@ class AuthorizationLapsed(Exception):
 def redeem_enrollment(
     db: DbSession, token: str, host_id: str | None, now: datetime
 ) -> tuple[Agent, str]:
+    # Ordem de locks IGUAL à do revoke (agente, depois token): sem deadlock
+    # entre enrolar e revogar ao mesmo tempo.
+    agent_id = db.scalar(
+        select(AgentEnrollmentToken.agent_id).where(
+            AgentEnrollmentToken.token_hash == sha256(token)
+        )
+    )
+    if agent_id is None:
+        raise EnrollmentRefused
+    agent = db.scalar(select(Agent).where(Agent.id == agent_id).with_for_update())
     row = db.scalar(
         select(AgentEnrollmentToken)
         .where(AgentEnrollmentToken.token_hash == sha256(token))
@@ -93,7 +103,6 @@ def redeem_enrollment(
     )
     if row is None or row.used_at is not None or row.expires_at <= now:
         raise EnrollmentRefused
-    agent = db.scalar(select(Agent).where(Agent.id == row.agent_id).with_for_update())
     if agent is None or agent.status != "pending":
         raise EnrollmentRefused
     if current_authorization(db, agent.authorization_id, now) is None:

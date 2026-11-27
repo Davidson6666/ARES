@@ -6,7 +6,7 @@ import threading
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,13 +14,15 @@ from httpx import Response
 from sqlalchemy import Engine, select, text, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session as DbSession
+from starlette.requests import Request
 
 from app.agents.models import Agent
 from app.auth.dependencies import CSRF_HEADER
 from app.auth.models import User
+from app.core.idempotency import IdempotencyKey
 from app.core.logging import configure_logging
 from app.events.bus import PostgresEventBus
-from app.events.models import Event, IdempotencyKey, IngestRecord
+from app.events.models import Event, IngestRecord
 from tests.test_agents import (
     admin_headers,
     authorize,
@@ -186,13 +188,6 @@ def test_request_shape_errors(world: dict[str, Any]) -> None:
         "/api/v1/events", content=b"{nao e json", headers={**h, "Content-Type": "application/json"}
     )
     assert r.status_code == 400 and r.json()["code"] == "malformed_request"
-    # NaN e Infinity não são JSON válido.
-    r = c.post(
-        "/api/v1/events",
-        content=b'{"events":[{"data":{"x":NaN}}]}',
-        headers={**h, "Content-Type": "application/json"},
-    )
-    assert r.status_code == 400
     assert stored_events(world["engine"]) == []
 
 
@@ -642,3 +637,432 @@ def test_get_event_access_rules(world: dict[str, Any]) -> None:
     assert body["event_id"] == ev["event_id"] and body["flags"] == []
     assert body["observed_at"] and body["agent_id"] == world["agent_id"]
     assert CSRF_HEADER not in body
+
+
+# --- achados da revisão: um evento ruim nunca derruba o lote -------------------
+
+
+def _raw_post(world: dict[str, Any], body: bytes, key: str = "raw") -> Response:
+    h = {
+        "Authorization": f"Agent {world['credential']}",
+        "Idempotency-Key": key,
+        "Content-Type": "application/json",
+    }
+    return cast(Response, world["agent"].post("/api/v1/events", content=body, headers=h))
+
+
+def _batch_with_one_good(
+    world: dict[str, Any], bad_event_json: str
+) -> tuple[Response, dict[str, Any]]:
+    good = make_event(world["agent_id"])
+    body = ('{"events":[' + json.dumps(good) + "," + bad_event_json + "]}").encode()
+    return _raw_post(world, body), good
+
+
+@pytest.mark.parametrize(
+    "bad_data_json",
+    [
+        '{"x": "\\ud800"}',  # surrogate solto: não codifica em UTF-8
+        '{"x": 1e999}',  # estoura para Infinity
+        '{"x": NaN}',
+        '{"x": -Infinity}',
+        '{"x": "a\\u0000b"}',
+    ],
+)
+def test_unsafe_values_reject_only_that_event(world: dict[str, Any], bad_data_json: str) -> None:
+    bad = json.dumps(make_event(world["agent_id"], data={"x": 0}))
+    bad = bad.replace('{"x": 0}', bad_data_json)
+    r, good = _batch_with_one_good(world, bad)
+    assert r.status_code == 202, r.text
+    outcomes = [(i["outcome"], i["error_code"]) for i in r.json()["results"]]
+    assert outcomes == [("accepted", None), ("rejected", "invalid_data")]
+    assert [str(e.event_id) for e in stored_events(world["engine"])] == [good["event_id"]]
+
+
+def test_numbers_that_jsonb_expands_cannot_break_the_batch(world: dict[str, Any]) -> None:
+    """1e300 tem 6 bytes no JSON, mas o jsonb::text o imprime com 301 dígitos:
+    o CHECK data_size do banco recusa. Só o evento é rejeitado."""
+    aid = world["agent_id"]
+    inflating = make_event(aid, data={"n": [1e300] * 100})  # ~700 B no JSON, ~30 KB no jsonb
+    good = make_event(aid)
+    r = post_events(world["agent"], world["credential"], [good, inflating])
+    assert r.status_code == 202, r.text
+    assert [(i["outcome"], i["error_code"]) for i in r.json()["results"]] == [
+        ("accepted", None),
+        ("rejected", "data_too_large"),
+    ]
+    assert len(stored_events(world["engine"])) == 1
+
+
+def test_data_size_is_measured_like_postgres(world: dict[str, Any]) -> None:
+    """Chaves pequenas: compacto cabe em 16 KB, mas o jsonb::text (com espaços) não."""
+    aid = world["agent_id"]
+    n = 1000
+    while True:
+        many = {f"k{i}": 1 for i in range(n)}
+        if len(json.dumps(many)) > 16 * 1024:
+            break
+        n += 20
+    assert len(json.dumps(many, separators=(",", ":"))) < 16 * 1024 < len(json.dumps(many))
+    r = post_events(world["agent"], world["credential"], [make_event(aid, data=many)])
+    assert r.json()["results"][0]["error_code"] == "data_too_large"
+
+
+def test_unsupported_version_is_reported_even_with_new_top_level_fields(
+    world: dict[str, Any],
+) -> None:
+    ev = make_event(world["agent_id"], schema_version=2, campo_da_v2={"novo": True})
+    r = post_events(world["agent"], world["credential"], [ev])
+    assert r.json()["results"][0]["error_code"] == "unsupported_schema_version"
+
+
+def test_purge_keeps_used_enrollment_tokens(admin_engine: Engine) -> None:
+    from app import cli as cli_module
+
+    with admin_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO users (id, email, display_name, password_hash) VALUES "
+                "('00000000-0000-0000-0000-000000000001', 'x@x', 'x', 'h')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO operator_authorizations (id, reference, description, valid_from, "
+                "valid_until, recorded_at) VALUES ('00000000-0000-0000-0000-0000000000a1', 'r', 'd', "
+                "now() - interval '2 days', now() + interval '1 day', now())"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO agents (id, name, module, status, authorization_id, created_by, created_at) "
+                "VALUES ('00000000-0000-0000-0000-0000000000b1', 'a', 'endpoint', 'pending', "
+                "'00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-000000000001', now())"
+            )
+        )
+        for i, used in enumerate(("NULL", "now() - interval '2 hours'")):
+            conn.execute(
+                text(
+                    "INSERT INTO agent_enrollment_tokens (id, agent_id, token_hash, created_at, expires_at, used_at) "
+                    f"VALUES (gen_random_uuid(), '00000000-0000-0000-0000-0000000000b1', decode('{i:02x}' || repeat('00', 31), 'hex'), "
+                    f"now() - interval '3 hours', now() - interval '1 hour', {used})"
+                )
+            )
+    removed = cli_module.purge_expired(admin_engine)
+    assert removed["agent_enrollment_tokens"] == 1  # só o vencido E não usado
+    with admin_engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM agent_enrollment_tokens")).scalar_one() == 1
+
+
+# --- achados da revisão de segurança (1ª rodada) --------------------------------
+
+
+def test_small_body_limit_on_regular_routes_and_public_enroll(world: dict[str, Any]) -> None:
+    c = world["agent"]
+    big = b'{"enrollment_token":"' + b"x" * 40_000 + b'"}'
+    h = {"Content-Type": "application/json"}
+    r = c.post("/api/v1/agents/enroll", content=big, headers=h)
+    assert r.status_code == 413 and r.json()["code"] == "payload_too_large"
+    assert r.json()["request_id"]  # a resposta de limite já sai com request_id
+
+    def chunks() -> Iterator[bytes]:  # sem Content-Length
+        for i in range(0, len(big), 4096):
+            yield big[i : i + 4096]
+
+    assert c.post("/api/v1/agents/enroll", content=chunks(), headers=h).status_code == 413
+    assert c.post("/api/v1/auth/login", content=big, headers=h).status_code == 413
+    # Corpo normal continua passando.
+    assert c.post("/api/v1/agents/enroll", json={"enrollment_token": "x" * 43}).status_code == 401
+
+
+def test_slow_body_is_cut_off_with_408() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.core.errors import ApiError
+    from app.ingress.router import read_limited_body
+
+    class Slow:
+        headers: ClassVar[dict[str, str]] = {}
+        app = SimpleNamespace(
+            state=SimpleNamespace(settings=SimpleNamespace(ingest_body_timeout_seconds=0.05))
+        )
+
+        async def stream(self) -> Any:
+            await asyncio.sleep(2)
+            yield b"x"
+
+    with pytest.raises(ApiError) as exc:
+        asyncio.run(read_limited_body(Slow()))  # type: ignore[arg-type]
+    assert exc.value.status_code == 408 and exc.value.code == "request_timeout"
+
+
+def test_agent_auth_releases_the_database_transaction(
+    world: dict[str, Any], app_engine: Engine
+) -> None:
+    """O corpo ainda vai ser lido: conexão parada dentro de transação prenderia o pool."""
+    from app.agents.deps import require_agent
+    from app.core.database import make_session_factory
+
+    scope = {
+        "type": "http",
+        "headers": [(b"authorization", f"Agent {world['credential']}".encode())],
+        "client": ("127.0.0.1", 1),
+        "app": world["app"],
+    }
+    # Mesma fábrica da aplicação (expire_on_commit=False).
+    with make_session_factory(app_engine)() as db:
+        ctx = require_agent(Request(scope), db)
+        assert ctx.agent.status == "active"
+        assert not db.in_transaction()
+
+
+def test_engine_drops_idle_in_transaction_connections(migrated_database_url: str) -> None:
+    from app.core.database import build_engine
+
+    engine = build_engine(migrated_database_url)
+    try:
+        with engine.connect() as conn:
+            value = conn.execute(text("SHOW idle_in_transaction_session_timeout")).scalar_one()
+        assert value == "30s"
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("how", ["revoked", "expired"])
+def test_lapsed_authorization_cuts_off_an_enrolled_agent(world: dict[str, Any], how: str) -> None:
+    ev = [make_event(world["agent_id"])]
+    assert post_events(world["agent"], world["credential"], ev, key="a").status_code == 202
+    with DbSession(world["engine"]) as db:
+        from app.agents.models import OperatorAuthorization
+
+        db.execute(
+            update(OperatorAuthorization).values(
+                **(
+                    {"revoked_at": datetime.now(UTC)}
+                    if how == "revoked"
+                    else {
+                        "valid_from": datetime.now(UTC) - timedelta(days=2),
+                        "valid_until": datetime.now(UTC) - timedelta(seconds=1),
+                    }
+                )
+            )
+        )
+        db.commit()
+    r = post_events(world["agent"], world["credential"], [make_event(world["agent_id"])], key="b")
+    assert r.status_code == 401
+    assert len(stored_events(world["engine"])) == 1
+
+
+def test_ingest_records_cannot_be_overwritten_by_another_agent(world: dict[str, Any]) -> None:
+    other_id, other_cred = enrolled_agent(
+        world["human"], world["engine"], world["headers"], key="x", name="b"
+    )
+    victim = make_event(world["agent_id"])
+    post_events(world["agent"], world["credential"], [victim], key="v")
+    # O agente B reenvia o event_id do agente A: aceito pelo outro? inválido? duplicata?
+    forged_invalid = dict(
+        victim, schema_version=9, source={"module": "endpoint", "instance_id": other_id}
+    )
+    forged_valid = dict(victim, source={"module": "endpoint", "instance_id": other_id})
+    post_events(world["agent"], other_cred, [forged_invalid], key="f1")
+    post_events(world["agent"], other_cred, [forged_valid], key="f2")
+    post_events(world["agent"], world["credential"], [victim], key="v2")  # duplicata do próprio
+    with DbSession(world["engine"]) as db:
+        rec = db.get(IngestRecord, uuid.UUID(victim["event_id"]))
+        assert rec is not None
+        assert (rec.outcome, rec.source_id) == ("accepted", world["agent_id"])  # intacto
+
+
+def test_rejected_record_can_still_become_accepted(world: dict[str, Any]) -> None:
+    ev = make_event(world["agent_id"])
+    bad = dict(ev, schema_version=3)
+    post_events(world["agent"], world["credential"], [bad], key="1")
+    post_events(world["agent"], world["credential"], [ev], key="2")
+    with DbSession(world["engine"]) as db:
+        rec = db.get(IngestRecord, uuid.UUID(ev["event_id"]))
+        assert rec is not None and rec.outcome == "accepted"
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        "1700000000",
+        1700000000,
+        "2026-11-27 10:00:00+00",
+        "2026-11-27T10:00:00z",
+        "2026-11-27t10:00:00Z",
+        "9999-12-31T23:59:59-05:00",
+        "0001-01-01T00:00:00+05:00",
+        "2026-11-27T10:00:00+0000",
+        "2026-11-27",
+        "2026-13-27T10:00:00Z",
+    ],
+)
+def test_occurred_at_must_be_strict_rfc3339_and_never_crash_the_batch(
+    world: dict[str, Any], stamp: Any
+) -> None:
+    good = make_event(world["agent_id"])
+    bad = make_event(world["agent_id"], occurred_at=stamp)
+    r = post_events(world["agent"], world["credential"], [bad, good])
+    assert r.status_code == 202, r.text
+    assert [i["outcome"] for i in r.json()["results"]] == ["rejected", "accepted"]
+    assert r.json()["results"][0]["error_code"] == "invalid_field"
+
+
+@pytest.mark.parametrize(
+    "stamp", ["2026-11-27T10:00:00Z", "2026-11-27T10:00:00.123456789Z", "2026-11-27T07:00:00-03:00"]
+)
+def test_valid_rfc3339_forms_are_accepted(world: dict[str, Any], stamp: str) -> None:
+    r = post_events(
+        world["agent"], world["credential"], [make_event(world["agent_id"], occurred_at=stamp)]
+    )
+    assert r.json()["accepted"] == 1
+
+
+def test_sensitive_responses_are_not_cacheable_and_nosniff(world: dict[str, Any]) -> None:
+    ev = make_event(world["agent_id"])
+    r = post_events(world["agent"], world["credential"], [ev])
+    assert (
+        r.headers["cache-control"] == "no-store"
+        and r.headers["x-content-type-options"] == "nosniff"
+    )
+    g = world["human"].get(f"/api/v1/events/{ev['event_id']}")
+    assert (
+        g.headers["cache-control"] == "no-store"
+        and g.headers["x-content-type-options"] == "nosniff"
+    )
+    assert world["human"].get("/health").headers["x-content-type-options"] == "nosniff"
+    assert world["human"].get("/health").headers.get("cache-control") != "no-store"
+
+
+def test_double_enroll_with_same_token_yields_one_credential(world: dict[str, Any]) -> None:
+    token = create_agent(
+        world["human"], world["headers"], authorize(world["engine"]), key="d", name="d"
+    ).json()["enrollment_token"]
+    barrier = threading.Barrier(2)
+    codes: list[int] = []
+
+    def go() -> None:
+        with TestClient(world["app"], base_url="https://testserver") as c:
+            barrier.wait()
+            codes.append(enroll(c, token).status_code)
+
+    threads = [threading.Thread(target=go) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(codes) == [200, 401]
+    with world["engine"].connect() as conn:
+        n = conn.execute(
+            text(
+                "SELECT count(*) FROM agent_credentials WHERE agent_id = "
+                "(SELECT agent_id FROM agent_enrollment_tokens ORDER BY created_at DESC LIMIT 1)"
+            )
+        ).scalar_one()
+    assert n == 1
+
+
+def test_enroll_and_revoke_at_the_same_time_never_deadlock(world: dict[str, Any]) -> None:
+    created = create_agent(
+        world["human"], world["headers"], authorize(world["engine"]), key="r", name="r"
+    ).json()
+    barrier = threading.Barrier(2)
+    results: dict[str, int] = {}
+
+    def do_enroll() -> None:
+        with TestClient(world["app"], base_url="https://testserver") as c:
+            barrier.wait()
+            results["enroll"] = enroll(c, created["enrollment_token"]).status_code
+
+    def do_revoke() -> None:
+        barrier.wait()
+        results["revoke"] = (
+            world["human"]
+            .post(f"/api/v1/agents/{created['agent_id']}/revoke", headers=world["headers"])
+            .status_code
+        )
+
+    threads = [threading.Thread(target=do_enroll), threading.Thread(target=do_revoke)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results["revoke"] == 200 and results["enroll"] in (200, 401, 409)
+    with world["engine"].connect() as conn:
+        status = conn.execute(
+            text("SELECT status FROM agents WHERE id = :i"), {"i": created["agent_id"]}
+        ).scalar_one()
+        active = conn.execute(
+            text(
+                "SELECT count(*) FROM agent_credentials WHERE agent_id = :i AND revoked_at IS NULL"
+            ),
+            {"i": created["agent_id"]},
+        ).scalar_one()
+    assert status == "revoked" and active == 0
+
+
+def test_revoke_that_lands_while_the_body_is_being_read_still_wins(world: dict[str, Any]) -> None:
+    """O agente passou na autenticação, e o revoke chega durante a leitura do corpo."""
+    import app.ingress.router as ingress
+
+    original = ingress.read_limited_body
+
+    async def revoke_then_read(request: Request) -> bytes:
+        body: bytes = await original(request)
+        with world["engine"].begin() as conn:
+            conn.execute(text("UPDATE agents SET status = 'revoked', revoked_at = now()"))
+        return body
+
+    world["app"].dependency_overrides[original] = revoke_then_read
+    try:
+        r = post_events(world["agent"], world["credential"], [make_event(world["agent_id"])])
+    finally:
+        world["app"].dependency_overrides.clear()
+    assert r.status_code == 401
+    assert stored_events(world["engine"]) == []  # nada gravado depois da revogação
+
+
+def test_repeated_bad_credentials_get_429_but_a_good_agent_is_untouched(
+    app_engine: Engine, admin_engine: Engine
+) -> None:
+    app = build_app(app_engine, agent_auth_failures_per_minute=3)
+    with TestClient(app, base_url="https://testserver") as human:
+        headers = admin_headers(human, admin_engine)
+        aid, cred = enrolled_agent(human, admin_engine, headers)
+        with TestClient(app, base_url="https://testserver") as c:
+            bad = "Agent ares_agent_" + "0" * 32 + "." + "A" * 43
+            codes = [
+                c.get("/_whoami", headers={"Authorization": bad}).status_code for _ in range(5)
+            ]
+            assert codes == [401, 401, 401, 429, 429]
+        # Outro IP (cliente) não é afetado: o balde é por IP e só conta falhas.
+        assert post_events(
+            TestClient(app, base_url="https://testserver"), cred, [make_event(aid)]
+        ).status_code in (202, 429)
+
+
+def test_malformed_credentials_also_count_toward_the_failure_limit(
+    app_engine: Engine, admin_engine: Engine
+) -> None:
+    app = build_app(app_engine, agent_auth_failures_per_minute=2)
+    with TestClient(app, base_url="https://testserver") as c:
+        codes = [
+            c.get("/_whoami", headers={"Authorization": "Agent lixo"}).status_code for _ in range(3)
+        ]
+    assert codes == [401, 401, 429]
+
+
+def test_agent_credentials_endpoint_status_codes_are_not_5xx_on_fuzz(world: dict[str, Any]) -> None:
+    for payload in (
+        b"",
+        b"null",
+        b"[]",
+        b"{}",
+        b'{"events":null}',
+        b"\xff\xfe",
+        b'{"events":[null,1,"a",[],{}]}',
+    ):
+        r = _raw_post(world, payload, key="fz")
+        assert r.status_code < 500, (payload, r.status_code)

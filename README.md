@@ -58,6 +58,16 @@ uv run python -m app.cli issue-recovery --email voce@exemplo.local   # token de 
 
 `super_admin` e `security_admin` só entram com TOTP: no primeiro login, a API devolve `{"status":"mfa_required","purpose":"enroll"}` e o cadastro (`POST /api/v1/auth/mfa/enroll` e `/confirm`) conclui o login. O token de recuperação é entregue só pelo CLI, no servidor; ele troca a senha e encerra as sessões, mas **não** desativa o MFA.
 
+Agentes e eventos (ADR 0006). O enrolamento de agente exige um termo de autorização vigente, que só se registra pelo CLI, no servidor:
+
+```powershell
+uv run python -m app.cli record-authorization --reference "TERMO-001" --description "Rede de laboratório" --days 30
+uv run python -m app.cli revoke-authorization --id <uuid>
+uv run python -m app.cli purge-expired      # remove ingest_records (7 dias), idempotency_keys e tokens vencidos
+```
+
+Depois, pela API (administrador com MFA): `POST /api/v1/agents` (com `Idempotency-Key`) devolve um token de enrolamento de 24 h e uso único; o agente o troca por uma credencial em `POST /api/v1/agents/enroll` e envia lotes de até 100 eventos em `POST /api/v1/events` (`Authorization: Agent <credencial>`, `Idempotency-Key` obrigatória). A credencial e o token só aparecem uma vez. `rotate` e `revoke` trocam e cortam a credencial; a revogação vale na requisição seguinte.
+
 Conferir a integridade da trilha de auditoria (código de saída 3 se a cadeia estiver quebrada):
 
 ```powershell

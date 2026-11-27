@@ -7,6 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 CONNECT_TIMEOUT_SECONDS = 2
+IDLE_IN_TRANSACTION_MS = 30_000
 
 
 def build_engine(url: str) -> Engine:
@@ -16,7 +17,12 @@ def build_engine(url: str) -> Engine:
         # Erros do banco não carregam valores dos parâmetros (e-mail, senha
         # digitada no campo errado etc.) para exceções e logs.
         hide_parameters=True,
-        connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
+        connect_args={
+            "connect_timeout": CONNECT_TIMEOUT_SECONDS,
+            # Conexão parada dentro de transação é derrubada: um cliente lento
+            # (corpo gotejado) não pode prender o pool.
+            "options": f"-c idle_in_transaction_session_timeout={IDLE_IN_TRANSACTION_MS}",
+        },
     )
 
 

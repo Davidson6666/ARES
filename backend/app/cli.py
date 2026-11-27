@@ -122,6 +122,8 @@ def record_authorization(engine: Engine, reference: str, description: str, days:
         raise CliError("--days deve ficar entre 1 e 365.")
     if not reference.strip() or not description.strip():
         raise CliError("Referência e descrição são obrigatórias.")
+    if any(ord(c) < 32 or ord(c) == 127 for c in reference + description):
+        raise CliError("Referência e descrição não aceitam caracteres de controle.")
     now = datetime.now(UTC)
     with DbSession(engine) as db:
         row = OperatorAuthorization(
@@ -171,21 +173,20 @@ def revoke_authorization(engine: Engine, authorization_id: uuid.UUID) -> None:
 
 def purge_expired(engine: Engine) -> dict[str, int]:
     """Remove dados vencidos (complemento 2.1): ingest_records com mais de 7
-    dias, idempotency_keys vencidas e tokens de enrolamento vencidos. Roda como
+    dias, idempotency_keys vencidas e tokens de enrolamento vencidos e NÃO usados. Roda como
     ``ares_owner``; o ``ares_app`` não tem DELETE."""
     now = datetime.now(UTC)
     removed: dict[str, int] = {}
     with engine.begin() as conn:
-        for table, column, limit in (
-            ("ingest_records", "received_at", now - timedelta(days=7)),
-            ("idempotency_keys", "expires_at", now),
-            ("agent_enrollment_tokens", "expires_at", now),
+        for table, column, limit, extra in (
+            ("ingest_records", "received_at", now - timedelta(days=7), ""),
+            ("idempotency_keys", "expires_at", now, ""),
+            # Só os NÃO usados: o token usado fica como rastro do enrolamento.
+            ("agent_enrollment_tokens", "expires_at", now, " AND used_at IS NULL"),
         ):
+            # Nomes de tabela, coluna e condição são constantes acima, nunca entrada.
             result = conn.execute(
-                text(
-                    f"DELETE FROM {table} WHERE {column} < :limit"
-                ),  # nomes de tabela e coluna fixos acima
-                {"limit": limit},
+                text(f"DELETE FROM {table} WHERE {column} < :limit{extra}"), {"limit": limit}
             )
             removed[table] = result.rowcount
     return removed

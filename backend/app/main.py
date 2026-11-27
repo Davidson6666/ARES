@@ -8,6 +8,7 @@ from app.api.health import router as health_router
 from app.audit.router import router as audit_router
 from app.auth.mfa_router import router as mfa_router
 from app.auth.router import router as auth_router
+from app.core.body_limit import BodyLimitMiddleware
 from app.core.config import Settings
 from app.core.database import build_engine, make_session_factory
 from app.core.errors import register_exception_handlers
@@ -15,6 +16,7 @@ from app.core.logging import configure_logging
 from app.core.rate_limit import SlidingWindowLimiter
 from app.core.request_id import request_id_middleware
 from app.events.bus import PostgresEventBus
+from app.events.envelope import MAX_BODY_BYTES
 from app.ingress.router import router as ingress_router
 
 
@@ -44,6 +46,9 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         limit=settings.login_rate_limit_per_minute, window_seconds=60
     )
     app.state.event_bus = PostgresEventBus()
+    app.state.agent_auth_fail_limiter = SlidingWindowLimiter(
+        limit=settings.agent_auth_failures_per_minute, window_seconds=60
+    )
     app.state.enroll_limiter = SlidingWindowLimiter(
         limit=settings.enroll_rate_limit_per_minute, window_seconds=60
     )
@@ -55,6 +60,13 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     )
     app.state.recovery_limiter = SlidingWindowLimiter(
         limit=settings.recovery_rate_limit_per_minute, window_seconds=60
+    )
+    # Adicionado ANTES do request_id: fica por dentro dele, e a resposta 413
+    # já sai com o request_id da requisição.
+    app.add_middleware(
+        BodyLimitMiddleware,
+        default_limit=settings.max_body_bytes,
+        path_limits={"/api/v1/events": MAX_BODY_BYTES},
     )
     app.middleware("http")(request_id_middleware)
     register_exception_handlers(app)

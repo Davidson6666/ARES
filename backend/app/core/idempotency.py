@@ -14,11 +14,31 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import Request
-from sqlalchemy import select, text
+from sqlalchemy import CheckConstraint, DateTime, Integer, LargeBinary, String, Text, select, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.orm import Session as DbSession
 
+from app.core.db_base import Base
 from app.core.errors import ApiError
-from app.events.models import IdempotencyKey
+
+
+class IdempotencyKey(Base):
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        CheckConstraint("principal_type IN ('user', 'agent')", name="principal_type"),
+        CheckConstraint("octet_length(request_hash) = 32", name="request_hash_length"),
+    )
+
+    principal_type: Mapped[str] = mapped_column(String(8), primary_key=True)
+    principal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_hash: Mapped[bytes] = mapped_column(LargeBinary)
+    response_status: Mapped[int] = mapped_column(Integer)
+    response_body: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
 
 HEADER = "Idempotency-Key"
 RETENTION = timedelta(hours=24)

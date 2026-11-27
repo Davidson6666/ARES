@@ -153,6 +153,8 @@ def test_authorization_cli_validations_and_audit(admin_engine: Engine) -> None:
             cli.record_authorization(admin_engine, "R", "D", days)
     with pytest.raises(cli.CliError):
         cli.record_authorization(admin_engine, " ", "D", 5)
+    with pytest.raises(cli.CliError, match="controle"):
+        cli.record_authorization(admin_engine, "R\nforjada", "D", 5)
     auth_id = authorize(admin_engine)
     cli.revoke_authorization(admin_engine, auth_id)
     with pytest.raises(cli.CliError, match="já estava revogado"):

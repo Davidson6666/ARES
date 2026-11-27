@@ -9,6 +9,8 @@ só se valida forma e limites; nada é interpretado nem executado.
 """
 
 import json
+import math
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -25,6 +27,7 @@ MAX_BATCH = 100
 SUPPORTED_SCHEMA_VERSION = 1
 _MAX_DEPTH = 32
 
+_RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})")
 _EVENT_TYPE = r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$"
 _MODULE = r"^[a-z][a-z0-9_]{0,63}$"
 
@@ -70,12 +73,24 @@ class Envelope(BaseModel):
             raise ValueError("deve ser texto")  # noqa: TRY004  (pydantic só converte ValueError)
         return value
 
+    @field_validator("occurred_at", mode="before")
+    @classmethod
+    def _rfc3339(cls, value: Any) -> Any:
+        # O pydantic aceitaria "1700000000" (epoch) e "2026-11-27 10:00:00+00";
+        # a spec manda RFC 3339 UTC.
+        if not isinstance(value, str) or not _RFC3339.fullmatch(value):
+            raise ValueError("deve ser RFC 3339 (ex.: 2026-11-26T19:04:00Z)")
+        return value
+
     @field_validator("occurred_at")
     @classmethod
     def _aware(cls, value: datetime) -> datetime:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("faltou o fuso (RFC 3339 UTC)")
-        return value.astimezone(UTC)
+        try:
+            return value.astimezone(UTC)
+        except OverflowError:  # 9999-12-31T23:59:59-05:00 não cabe em UTC
+            raise ValueError("data fora do intervalo") from None
 
     _ids = field_validator("tenant_id", "device_id", "correlation_id", mode="before")(
         lambda v: v if v is None else _text(v)
@@ -96,21 +111,36 @@ class Rejected:
     field: str | None = None
 
 
-def reject_constant(name: str) -> Any:
-    """json.loads: NaN e Infinity não são JSON e o JSONB do PostgreSQL os recusa."""
-    raise ValueError(f"constante não permitida: {name}")
+def lenient_constant(_name: str) -> float:
+    """``json.loads``: NaN e Infinity não são JSON válido e o JSONB os recusa.
+    Em vez de derrubar o lote inteiro, viram um float não finito, e o evento que
+    os contém é rejeitado sozinho (``invalid_data``, ver ``_unsafe``)."""
+    return math.nan
 
 
-def _size(value: Any) -> int:
-    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+def _size(value: Any, pg_style: bool = False) -> int:
+    """Bytes do JSON de ``value``. ``pg_style`` usa os separadores do
+    ``jsonb::text`` do PostgreSQL (``", "`` e ``": ""``), que é o que o CHECK
+    ``data_size`` mede."""
+    separators = (", ", ": ") if pg_style else (",", ":")
+    return len(json.dumps(value, separators=separators, ensure_ascii=False).encode("utf-8"))
 
 
 def _unsafe(value: Any, depth: int = 0) -> bool:
-    """NUL (o JSONB o recusa) ou aninhamento profundo demais."""
+    """Valores que o JSONB recusa ou que não podem ser medidos: NUL, surrogate
+    solto (não codifica em UTF-8), float não finito e aninhamento profundo."""
     if depth > _MAX_DEPTH:
         return True
+    if isinstance(value, float):
+        return not math.isfinite(value)
     if isinstance(value, str):
-        return "\x00" in value
+        if "\x00" in value:
+            return True
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return True
+        return False
     if isinstance(value, list):
         return any(_unsafe(v, depth + 1) for v in value)
     if isinstance(value, dict):
@@ -142,13 +172,23 @@ def validate_event(raw: Any, agent: Agent, now: datetime, future_seconds: int) -
     if not isinstance(raw, dict):
         return Rejected(None, "invalid_event")
     event_id = _event_id_text(raw)
+    if _unsafe(raw):  # antes de medir: surrogate solto quebraria o encode
+        return Rejected(event_id, "invalid_data")
     if _size(raw) > MAX_EVENT_BYTES:
         return Rejected(event_id, "event_too_large")
     data = raw.get("data")
-    if isinstance(data, dict) and _size(data) > MAX_DATA_BYTES:
+    if isinstance(data, dict) and _size(data, pg_style=True) > MAX_DATA_BYTES:
         return Rejected(event_id, "data_too_large", "data")
-    if _unsafe(raw):
-        return Rejected(event_id, "invalid_data")
+    # Versão não suportada é dita antes de qualquer outra coisa: uma versão
+    # futura pode ter campos novos no topo, e o autor precisa ver o motivo certo.
+    version = raw.get("schema_version")
+    if (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version >= 1
+        and version != SUPPORTED_SCHEMA_VERSION
+    ):
+        return Rejected(event_id, "unsupported_schema_version", "schema_version")
     try:
         envelope = Envelope.model_validate(raw)
     except ValidationError as exc:

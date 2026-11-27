@@ -26,7 +26,7 @@ depends_on: str | Sequence[str] | None = None
 
 APP_GRANTS: dict[str, str] = {
     "operator_authorizations": "SELECT",
-    "agents": "SELECT, INSERT, UPDATE",
+    "agents": "SELECT, INSERT",
     "agent_enrollment_tokens": "SELECT, INSERT, UPDATE",
     "agent_credentials": "SELECT, INSERT, UPDATE",
     "events": "SELECT, INSERT",
@@ -183,6 +183,14 @@ def upgrade() -> None:
         """
         + "".join(f"GRANT {p} ON TABLE {t} TO ares_app;\n" for t, p in APP_GRANTS.items())
         + """
+            -- UPDATE por coluna: um bug ou injeção na API não consegue mudar
+            -- module, tenant_id, name ou authorization_id de um agente, nem o
+            -- escopo (tenant_id) de um usuário.
+            GRANT UPDATE (status, host_id, activated_at, last_seen_at, revoked_at)
+                ON TABLE agents TO ares_app;
+            REVOKE UPDATE ON TABLE users FROM ares_app;
+            GRANT UPDATE (failed_login_count, locked_until, password_hash, updated_at)
+                ON TABLE users TO ares_app;
             END IF;
         END
         $$;

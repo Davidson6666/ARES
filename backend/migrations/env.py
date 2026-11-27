@@ -24,6 +24,7 @@ if config.config_file_name is not None and not config.attributes.get("skip_loggi
 from app.agents import models as _agent_models  # noqa: F401
 from app.audit import models as _audit_models  # noqa: F401  (registra as tabelas)
 from app.auth import models as _models  # noqa: F401
+from app.core import idempotency as _idempotency  # noqa: F401
 from app.core.db_base import Base
 from app.events import models as _event_models  # noqa: F401
 

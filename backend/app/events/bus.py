@@ -15,6 +15,7 @@ from typing import Literal, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError, StatementError
 from sqlalchemy.orm import Session as DbSession
 
 from app.agents.models import Agent
@@ -45,7 +46,7 @@ class PostgresEventBus:
         results: list[PublishResult] = []
         for parsed in events:
             env = parsed.envelope
-            inserted = db.execute(
+            statement = (
                 pg_insert(Event)
                 .values(
                     event_id=env.event_id,
@@ -66,7 +67,21 @@ class PostgresEventBus:
                 )
                 .on_conflict_do_nothing(index_elements=["event_id"])
                 .returning(Event.event_id)
-            ).scalar()
+            )
+            try:
+                # SAVEPOINT por evento: o que o PostgreSQL recusar (CHECK, JSONB)
+                # rejeita SÓ este evento; o lote não vira 500 (complemento 3.3).
+                with db.begin_nested():
+                    inserted = db.execute(statement).scalar()
+            except StatementError as exc:
+                # Só erro DE DADO do evento (CHECK, JSONB, bind). Deadlock, queda
+                # de conexão etc. continuam subindo (503 com retry).
+                if isinstance(exc, DBAPIError) and not isinstance(exc, DataError | IntegrityError):
+                    raise
+                constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None) or ""
+                code = "data_too_large" if constraint.endswith("data_size") else "invalid_data"
+                results.append(PublishResult("rejected", code))
+                continue
             if inserted is not None:
                 results.append(PublishResult("accepted"))
                 continue
@@ -93,6 +108,9 @@ def record_outcome(
     db.execute(
         stmt.on_conflict_do_update(
             index_elements=["event_id"],
+            # Um evento já ACEITO nunca é reescrito: nem por outro agente que
+            # reenvia o mesmo event_id (inclusive rejeitado), nem por duplicata.
+            where=(IngestRecord.outcome != "accepted"),
             set_={
                 "received_at": stmt.excluded.received_at,
                 "source_id": stmt.excluded.source_id,

@@ -4,6 +4,7 @@ O Ingress pertence ao Core e SÓ valida e aceita: entrega ao Event Bus e não
 interpreta o conteúdo (CLAUDE.md, seção 5).
 """
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta
@@ -13,9 +14,11 @@ import structlog
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
 from app.agents.deps import AgentContext, require_agent
+from app.agents.models import Agent
 from app.auth.dependencies import (
     allow_query,
     get_db,
@@ -89,23 +92,34 @@ def limited_agent(request: Request, ctx: AgentContext = Depends(require_agent)) 
 
 
 async def read_limited_body(request: Request) -> bytes:
-    """Lê o corpo até MAX_BODY_BYTES; acima disso, 413 sem carregar o resto."""
+    """Lê o corpo até MAX_BODY_BYTES, em no máximo ``ingest_body_timeout_seconds``.
+
+    Acima do limite, 413 sem carregar o resto (o middleware de corpo já cobre,
+    isto é defesa em profundidade). Corpo gotejado estoura o prazo: 408.
+    """
     declared = request.headers.get("content-length")
     if declared is not None and declared.isdigit() and int(declared) > envelope.MAX_BODY_BYTES:
         raise ApiError(413, "payload_too_large", "Corpo da requisição acima do limite (2 MB).")
+    timeout = request.app.state.settings.ingest_body_timeout_seconds
     chunks: list[bytes] = []
     total = 0
-    async for chunk in request.stream():
-        total += len(chunk)
-        if total > envelope.MAX_BODY_BYTES:
-            raise ApiError(413, "payload_too_large", "Corpo da requisição acima do limite (2 MB).")
-        chunks.append(chunk)
+    try:
+        async with asyncio.timeout(timeout):
+            async for chunk in request.stream():
+                total += len(chunk)
+                if total > envelope.MAX_BODY_BYTES:
+                    raise ApiError(
+                        413, "payload_too_large", "Corpo da requisição acima do limite (2 MB)."
+                    )
+                chunks.append(chunk)
+    except TimeoutError:
+        raise ApiError(408, "request_timeout", "O corpo da requisição demorou demais.") from None
     return b"".join(chunks)
 
 
 def _parse_batch(raw: bytes) -> list[Any]:
     try:
-        payload = json.loads(raw, parse_constant=envelope.reject_constant)
+        payload = json.loads(raw, parse_constant=envelope.lenient_constant)
     except ValueError, RecursionError:
         raise ApiError(
             400, "malformed_request", "A requisição não pôde ser interpretada."
@@ -153,7 +167,20 @@ def ingest(
     settings: Settings = Depends(get_settings),
 ) -> IngestResponse | JSONResponse:
     now = utcnow()
-    agent = ctx.agent
+    # Relê o agente travando a linha (FOR KEY SHARE): um `revoke` (FOR UPDATE) que
+    # chegou durante a leitura do corpo termina antes ou espera esta requisição
+    # acabar. Eventos de agente revogado nunca são gravados depois do commit da
+    # revogação. KEY SHARE não conflita com o UPDATE de last_seen_at de outra
+    # requisição do mesmo agente (FOR SHARE daria deadlock com a idempotência).
+    agent = db.scalar(
+        select(Agent)
+        .where(Agent.id == ctx.agent.id)
+        .with_for_update(read=True, key_share=True)
+        # Sem isto o SQLAlchemy devolve o objeto já carregado (status antigo).
+        .execution_options(populate_existing=True)
+    )
+    if agent is None or agent.status != "active":
+        raise ApiError(401, "unauthenticated", "Credencial de agente ausente ou inválida.")
     key = idempotency.read_key(request)
     events = _parse_batch(raw)
     digest = idempotency.request_hash(raw)

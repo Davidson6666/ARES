@@ -86,6 +86,57 @@
 | Retenção de `events` por `data_classification` | Seção 5 do complemento (LGPD), em branco | A tabela cresce sem limite. |
 | Revogar um agente por rota de usuário `users.write` e administração de usuários e papéis | Fica para uma fase seguinte (fora do escopo escolhido) | Não há rota para o administrador gerir usuários além do bootstrap. |
 
+## Revisão de 27/11/2026 (revisões de segurança e de conformidade)
+
+Os testes de mutação confirmam: sem o termo vigente no `require_agent`, sem o middleware de corpo e sem a releitura do agente com lock, os testes correspondentes falham.
+
+### Segurança
+
+| Achado | Severidade | Mudança |
+|---|---|---|
+| A conexão do banco ficava presa dentro de transação enquanto o corpo era lido: um corpo gotejado com credencial válida esgotava o pool e derrubava login e `/ready` | Alta | `require_agent` fecha a transação antes de o corpo ser lido. A leitura tem prazo de 15 s (408 `request_timeout`). O engine derruba conexão ociosa dentro de transação em 30 s (`idle_in_transaction_session_timeout`). |
+| Nenhuma rota, fora `/events`, limitava o corpo: um anônimo mandava centenas de MB a `POST /agents/enroll` (pública) | Alta | Middleware ASGI antes das rotas: 16 KB por padrão (configurável) e 2 MB em `/events`, por `Content-Length` e pelos bytes lidos (inclusive sem `Content-Length`). A resposta 413 sai com `request_id`. O FastAPI troca qualquer exceção na leitura do corpo por 400, então o middleware envia o 413 por conta própria. |
+| Termo revogado ou vencido não afetava um agente já enrolado | Média | Decisão adicionada: o `require_agent` confere o termo vigente a cada requisição; sem ele, 401. O agente não volta (um termo revogado ou vencido não é reativado). |
+| Um agente sobrescrevia o `ingest_records` de outro com o mesmo `event_id`, e um agente rebaixava o próprio `accepted` | Média | Um registro `accepted` nunca é reescrito. Um `rejected` ainda pode virar `accepted`. |
+| `occurred_at` com estouro (`9999-12-31T23:59:59-05:00`) derrubava o lote com 500; o pydantic aceitava epoch em texto e `2026-11-27 10:00:00+00` | Média | RFC 3339 estrito (`T` e `Z` maiúsculos, fuso obrigatório) por expressão regular, e o estouro vira rejeição do evento. |
+| Revogar durante a leitura do corpo deixava gravar eventos do agente revogado | Baixa | A ingestão relê o agente com `FOR KEY SHARE` e `populate_existing` e confere `status = 'active'`. O `revoke` (`FOR UPDATE`) espera a ingestão ou termina antes. `KEY SHARE` (e não `SHARE`) evita deadlock com o `UPDATE last_seen_at` de outra requisição. |
+| Enrolar e revogar ao mesmo tempo podia dar deadlock (ordem de locks diferente) | Baixa | `redeem_enrollment` trava o agente e depois o token, como o `revoke`. |
+| Falhas de credencial de agente não tinham limite (cada uma custa uma consulta) | Baixa | Limite de falhas por IP (30 por minuto por padrão): 429 com `Retry-After`. |
+| `GET /events` e `/agents*` sem `Cache-Control: no-store`; sem `nosniff` | Baixa | `no-store` em `/api/v1/auth/`, `/agents` e `/events`; `X-Content-Type-Options: nosniff` em todas as respostas. |
+| `ares_app` podia mudar `module`, `tenant_id` e `authorization_id` de um agente, e o `tenant_id` (escopo) de um usuário | Baixa | `UPDATE` por coluna: em `agents`, só `status`, `host_id`, `activated_at`, `last_seen_at` e `revoked_at`; em `users`, só `failed_login_count`, `locked_until`, `password_hash` e `updated_at`. Teste confere as colunas. |
+| CLI aceitava caracteres de controle em `--reference` e `--description` | Baixa | Recusados. |
+
+### Conformidade e robustez
+
+| Achado | Mudança |
+|---|---|
+| Surrogate solto (`"\ud800"`), `1e999`, `NaN` e `Infinity` derrubavam o lote com 500 | Cada um rejeita só o evento (`invalid_data`). `NaN` e `Infinity` deixam de dar 400 no lote inteiro. |
+| `data` medido no app (JSON compacto) diferia do CHECK `octet_length(data::text)` (o `jsonb::text` põe espaços, ordena chaves e expande números: `1e300` tem 6 bytes e vira 301 dígitos) | O app mede `data` com os separadores do PostgreSQL. **O CHECK do banco é o árbitro:** cada `INSERT` roda em `SAVEPOINT`, e erro de dado (`data_size` vira `data_too_large`; o resto, `invalid_data`) rejeita só aquele evento. Deadlock e queda de conexão continuam subindo como 503. |
+| `schema_version` ≠ 1 com campo novo no topo recebia `unknown_field` | A versão é conferida antes: `unsupported_schema_version`. |
+| `IdempotencyKey` vivia no pacote `events`, mas é do Core | Movida para `app/core/idempotency.py`. A tabela não mudou. |
+| `agents.host_id` e `activated_at` não estavam no ADR | Registrados. `host_id` é informativo, sem verificação; o vínculo da credencial ao host continua em aberto. |
+| `purge-expired` apagava tokens de enrolamento usados | Só apaga tokens vencidos **e não usados**; o token usado fica como rastro. |
+
+### Divergências em relação à spec (decisão do autor pendente)
+
+- **`POST /agents/enroll` é público.** O complemento 3.1 e o CLAUDE.md 7.1 dizem que o público tem só `/health` e rotas de auth. A rota também não está na tabela 3.2.
+- **Evento grande demais e campo desconhecido no topo** viram `rejected` dentro do 202. O complemento 3.4 pede 413 para "64 KB por evento" e a seção 6 pede 422 para campo desconhecido, mas a seção 3.3 diz que lote parcialmente inválido não derruba os válidos. O código segue a 3.3.
+- **`POST /events` "agente ou engine":** só existe autenticação de agente. A de engine fica com a fase de módulos.
+- **Enum de `severity`** (`info`, `low`, `medium`, `high`, `critical`): a spec não define os valores.
+
+### Em aberto (adicionado)
+
+| Item | Alternativas | Risco de adiar |
+|---|---|---|
+| `event_id_conflict` confirma que o `event_id` existe sob outro agente, e a PK global permite "squatting" de IDs previsíveis | PK `(agent_id, event_id)` (diverge do complemento 2.1) ou código genérico; exigir UUIDv4 | Baixo: agentes são autenticados e o UUIDv4 é imprevisível. |
+| Credenciais de agente nunca expiram (`expires_at` nulo) | Validade padrão e rotação periódica | Credencial vazada vale até a revogação. |
+| Sem teto de requisições simultâneas por agente | Semáforo por agente | Cada requisição pode custar até 2 MB parseados. |
+| IP atrás de proxy reverso | Definir proxy confiável e `--proxy-headers` | Todos os clientes dividiriam o mesmo balde de rate limit. |
+| `purge-expired` é manual | Agendar (tarefa periódica) | `idempotency_keys` e `ingest_records` crescem. |
+| `data_classification` define acesso (seção 6 do complemento), mas `events.read` lê qualquer classificação | Permissões por classificação | Dado `personal` ou `sensitive` visível a quem tem `events.read`. |
+| `ingest_records` com `duplicate` não registra a duplicata (o `accepted` original é preservado) | Contador de duplicatas | Baixo. |
+| `--reference` e `--description` do CLI ficam no histórico do shell | Aceitar por stdin ou arquivo | Dado contratual no histórico. |
+
 ## Consequências
 
 - A tabela `events` guarda dados enviados por agentes: tratar como **conteúdo não confiável** (CLAUDE.md, 9.1). A API devolve JSON; o escape fica a cargo do frontend.
