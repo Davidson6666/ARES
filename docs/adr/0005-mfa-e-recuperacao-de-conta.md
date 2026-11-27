@@ -23,7 +23,7 @@
 | Item | Decisão |
 |---|---|
 | Cifra do segredo TOTP | AES-GCM (biblioteca `cryptography` 50.0.2). Chave em `ARES_MFA_KEY` (32 bytes em base64), fora do Git. |
-| Entrega do token de recuperação | `uv run python -m app.cli issue-recovery <e-mail>`: imprime o token uma vez, no terminal do servidor. |
+| Entrega do token de recuperação | `uv run python -m app.cli issue-recovery --email <e-mail>`: imprime o token uma vez, no terminal do servidor. |
 | MFA para administrador | `super_admin` e `security_admin` não entram sem TOTP ativo. |
 
 ### Proposto
@@ -40,7 +40,7 @@
 | Token de recuperação | 32 bytes, SHA-256 no banco, 15 min, uso único. Criado pelo CLI. Ao usar: troca a senha, revoga todas as sessões e **não** desativa o MFA. | Recuperar a senha não pode servir de atalho para contornar o segundo fator. |
 | Resposta de recuperação | `POST /auth/recovery/confirm` responde 401 `invalid_recovery` igual para token inexistente, expirado, usado ou de conta desativada. Rate limit por IP. | Complemento 4.1: sem enumeração. |
 | Auditoria | `mfa.enroll`, `mfa.confirm`, `mfa.disable`, `mfa.verify` (sucesso e falha), `mfa.recovery_codes_issued`, `auth.recovery_issued` (CLI, ator system), `auth.recovery_used`. | Ações sensíveis do marco 1. |
-| Rotas | `POST /api/v1/auth/mfa/enroll` (201), `POST /api/v1/auth/mfa/confirm` (200), `POST /api/v1/auth/mfa/verify` (200), `DELETE /api/v1/auth/mfa` (204), `POST /api/v1/auth/recovery-codes` (201), `POST /api/v1/auth/recovery/confirm` (200). | Complemento 3.2. |
+| Rotas | `POST /api/v1/auth/mfa/enroll` (201), `POST /api/v1/auth/mfa/confirm` (200), `POST /api/v1/auth/mfa/verify` (200), `DELETE /api/v1/auth/mfa` (204), `POST /api/v1/auth/recovery-codes` (201), `POST /api/v1/auth/recovery/confirm` (200). | Complemento 3.2. (`verify` consta na v1.1, seção 15, e não no complemento 3.2; a rota `POST /auth/recovery` da v1.1 foi substituída pelo comando `issue-recovery` do CLI.) |
 | Biblioteca TOTP | `pyotp` 2.12.1. | Já verificada no PyPI (ENVIRONMENT.md, seção 4). |
 
 ## Em aberto
@@ -52,6 +52,38 @@
 | Fator alternativo ao TOTP | Nenhum por enquanto (decisão de escopo) | Usuário sem app autenticador fica sem MFA. |
 | Recuperação sem acesso ao servidor | SMTP, quando houver operação real | Só o administrador consegue recuperar contas hoje. |
 | Revisão da lista de papéis administrativos | Incluir `auditor` ou não | Baixo. |
+
+## Revisão de 27/11/2026 (revisões de segurança e de conformidade)
+
+| Achado | Severidade | Mudança |
+|---|---|---|
+| Falha de MFA não contava contra a conta: com a senha, dava para palpitar 50 códigos por minuto por IP (cerca de 20% de chance por dia contra um TOTP de 6 dígitos) | Alta | Falha no `/mfa/verify` conta em `users.failed_login_count` e aplica o mesmo bloqueio progressivo do login. Senha correta **não** zera o contador; só o login completo zera. Conta bloqueada não passa pelo `/verify`. Limite por IP também no `/verify`. Os testes de mutação confirmam: sem a contagem, os dois testes de bloqueio falham. |
+| `enroll` por sessão roubada deixava o atacante virar dono do segundo fator | Média | `enroll` por sessão exige a senha atual. No desafio (administrador sem TOTP), a senha acabou de ser conferida no login. |
+| Falha de reautenticação por senha em `enroll`, `disable` e `recovery-codes` não tinha limite | Baixa | Contam na mesma conta e entram no bloqueio. |
+| 422 de senha fraca só ocorria com token válido (oráculo) | Baixa | O tamanho da senha é conferido antes de olhar o token. A regra "senha igual ao e-mail" continua depois, porque exige o usuário. |
+| Falha ao decifrar o segredo virava 500 | Baixa | Vira 503 `mfa_unavailable`, sem detalhe. |
+| `Cache-Control: no-store` faltava em `/verify` e no login | Baixa | Toda resposta sob `/api/v1/auth/` sai com `no-store`. |
+| Corrida entre recuperação e `/verify` em andamento: a sessão nova sobrevivia | Baixa | `/verify` e `use_recovery_token` travam a linha do usuário. |
+| Cada tentativa inválida de recuperação gravava uma linha permanente de auditoria | Baixa | Passou a ser só log, como `login.rate_limited` (ADR 0004). |
+| `secret` aparecia no `repr` de `Enrollment` | Baixa | `repr=False`. |
+| Dois `enroll` concorrentes deixavam dois pendentes e quebravam o `confirm` | Baixa | O `confirm` usa o pendente mais novo. |
+| `confirm` não revogava o fator ativo anterior (texto deste ADR) | Divergência | Revoga. Conflito concorrente vira 409 `mfa_already_enrolled`. |
+| O revisor de segurança disse que o `.env.example` tinha uma chave válida | Não procede | Conferido: o valor tem 24 caracteres e não decodifica como chave (é um placeholder). A chave real fica só no `.env`. |
+
+### Decisões e exceções registradas
+
+- **CSRF no caminho do desafio:** o `enroll` e o `confirm` feitos com o cookie do desafio (administrador sem TOTP) não exigem `X-CSRF-Token`, ao contrário do caminho por sessão. Justificativa: o cookie é `__Host-`, `SameSite=Strict`, dura 5 minutos e só serve para `enroll` e `confirm`. É uma exceção ao complemento 3.1; fica registrada aqui.
+- **`DELETE /auth/mfa` do complemento 3.2** diz "próprio usuário ou `users.write`". A rota não tem `{id}`, então só o próprio usuário é aceito, e papéis administrativos são recusados. Falta decidir se haverá uma rota própria para um administrador desativar o MFA de outro usuário.
+- **`secret_ref`:** o complemento 2.1 diz que aponta para um cofre. Aqui ele guarda a versão da chave (`env:v1`) e o segredo cifrado fica em `secret_ciphertext`. O complemento 2.1 e o CLAUDE.md 6.1 precisam ser alinhados.
+
+### Em aberto (adicionado)
+
+| Item | Alternativas | Risco de adiar |
+|---|---|---|
+| Comando de CLI para revogar o fator MFA de uma conta | `revoke-mfa --email`, auditado como `system` | Hoje, quem perde o app autenticador e os códigos de recuperação não tem saída. **Precisa de aprovação do autor.** |
+| Cada palpite de código de recuperação com formato válido roda até 10 verificações Argon2 (cerca de 1,25 s) | Busca por HMAC com chave do ambiente e uma única verificação Argon2 | Quem tem a senha pode saturar as 4 vagas de Argon2, mas só consegue 5 palpites antes do bloqueio da conta. |
+| Administrador recém-criado cadastra o TOTP só com a senha | O `create-admin` entregar o primeiro TOTP, ou exigir token do CLI | Risco residual até o primeiro login legítimo. |
+| Sessões de administrador criadas antes desta mudança não passaram por MFA | Revogar as sessões na migração | Valem até expirar (12 h no máximo). |
 
 ## Consequências
 
