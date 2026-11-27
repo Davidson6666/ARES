@@ -23,6 +23,16 @@ EXPECTED_APP_GRANTS: set[tuple[str, str]] = {
         for t in ("mfa_factors", "mfa_challenges", "recovery_codes", "recovery_tokens")
         for p in ("SELECT", "INSERT", "UPDATE")
     },
+    # Agentes (ADR 0006): o termo de autorização só se grava pelo CLI.
+    ("operator_authorizations", "SELECT"),
+    *{
+        (t, p)
+        for t in ("agents", "agent_enrollment_tokens", "agent_credentials", "ingest_records")
+        for p in ("SELECT", "INSERT", "UPDATE")
+    },
+    # Eventos: a API só insere e lê. Idempotência: regrava chave vencida (sem DELETE).
+    *{("events", p) for p in ("SELECT", "INSERT")},
+    *{("idempotency_keys", p) for p in ("SELECT", "INSERT", "UPDATE")},
 }
 
 pytestmark = pytest.mark.db
@@ -35,7 +45,7 @@ def test_upgrade_and_downgrade_cycle(temp_database_url: str) -> None:
         command.upgrade(cfg, "head")
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert version == "0004"
+        assert version == "0005"
 
         command.downgrade(cfg, "base")
         # Na base, o Alembic mantém a tabela alembic_version, mas sem linhas.

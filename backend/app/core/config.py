@@ -50,5 +50,12 @@ class Settings(BaseSettings):
     login_lockout_base_seconds: int = Field(default=60, ge=1)
     login_lockout_max_seconds: int = Field(default=15 * 60, ge=1)
 
+    # Agentes e eventos (ADR 0006). Limites por agente, em memória.
+    agent_requests_per_minute: int = Field(default=120, ge=1, le=100_000)
+    agent_events_per_minute: int = Field(default=6000, ge=1, le=10_000_000)
+    enroll_rate_limit_per_minute: int = Field(default=10, ge=1, le=1000)
+    # Evento com occurred_at além disto no futuro é aceito e marcado.
+    occurred_at_future_seconds: int = Field(default=300, ge=0)
+
     # Recuperação de conta (ADR 0005): limite por IP, em memória.
     recovery_rate_limit_per_minute: int = Field(default=5, ge=1, le=1000)

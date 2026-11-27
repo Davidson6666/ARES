@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from sqlalchemy import Engine
 
+from app.agents.router import router as agents_router
 from app.api.health import router as health_router
 from app.audit.router import router as audit_router
 from app.auth.mfa_router import router as mfa_router
@@ -40,6 +41,15 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.state.mfa_limiter = SlidingWindowLimiter(
         limit=settings.login_rate_limit_per_minute, window_seconds=60
     )
+    app.state.enroll_limiter = SlidingWindowLimiter(
+        limit=settings.enroll_rate_limit_per_minute, window_seconds=60
+    )
+    app.state.agent_request_limiter = SlidingWindowLimiter(
+        limit=settings.agent_requests_per_minute, window_seconds=60
+    )
+    app.state.agent_event_limiter = SlidingWindowLimiter(
+        limit=settings.agent_events_per_minute, window_seconds=60
+    )
     app.state.recovery_limiter = SlidingWindowLimiter(
         limit=settings.recovery_rate_limit_per_minute, window_seconds=60
     )
@@ -48,6 +58,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(mfa_router)
+    app.include_router(agents_router)
     app.include_router(audit_router)
     return app
 
