@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session as DbSession
 
 from app.auth import passwords
@@ -47,53 +47,67 @@ def csrf_matches(session_token: str, presented: str | None) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class LoginOutcome:
+    """Resultado do login. ``user`` só é preenchido em caso de sucesso.
+
+    ``user_id`` e ``reason`` são para a auditoria e para o log; nunca vão
+    para a resposta HTTP (que é sempre a mesma em qualquer falha).
+    """
+
+    user: User | None
+    user_id: uuid.UUID | None
+    reason: str | None
+    locked_now: bool = False
+
+
 def authenticate(
     db: DbSession, settings: Settings, email: str, password: str, now: datetime
-) -> User | None:
-    """Devolve o usuário se a credencial é válida. Toda falha gasta o tempo
-    de uma verificação Argon2 e tem o mesmo resultado (``None``).
+) -> LoginOutcome:
+    """Verifica a credencial. Toda falha gasta o tempo de uma verificação
+    Argon2. NÃO faz commit: quem chama grava auditoria e commit juntos.
 
-    A linha do usuário fica travada (``FOR UPDATE``) do início ao fim:
-    tentativas simultâneas contra a mesma conta são serializadas, e o
-    contador de falhas não perde atualização (cada uma vê o valor anterior
-    e o bloqueio já gravado).
+    A linha do usuário fica travada (``FOR UPDATE``) até o commit de quem
+    chama: tentativas simultâneas contra a mesma conta são serializadas, e o
+    contador de falhas não perde atualização.
     """
     user = db.scalar(select(User).where(User.email == normalize_email(email)).with_for_update())
-    if (
-        user is None
-        or user.status != "active"
-        or (user.locked_until is not None and user.locked_until > now)
-    ):
+    if user is None:
         passwords.verify_dummy(password)
-        db.commit()  # libera a trava; mesmo número de idas ao banco das outras falhas
-        return None
+        return LoginOutcome(None, None, "unknown_account")
+    if user.status != "active":
+        passwords.verify_dummy(password)
+        return LoginOutcome(None, user.id, "account_disabled")
+    if user.locked_until is not None and user.locked_until > now:
+        passwords.verify_dummy(password)
+        return LoginOutcome(None, user.id, "account_locked")
 
     if not passwords.verify_password(user.password_hash, password):
         user.failed_login_count += 1
         excess = user.failed_login_count - settings.login_max_failures
-        if excess >= 0:
+        locked_now = excess >= 0
+        if locked_now:
             delay = min(
                 settings.login_lockout_base_seconds * (2**excess),
                 settings.login_lockout_max_seconds,
             )
             user.locked_until = now + timedelta(seconds=delay)
         user.updated_at = now
-        db.commit()
-        return None
+        return LoginOutcome(None, user.id, "invalid_password", locked_now=locked_now)
 
     user.failed_login_count = 0
     user.locked_until = None
     if passwords.needs_rehash(user.password_hash):
         user.password_hash = passwords.hash_password(password)
     user.updated_at = now
-    db.commit()
-    return user
+    return LoginOutcome(user, user.id, None)
 
 
 def create_session(
     db: DbSession, settings: Settings, user: User, user_agent: str | None, now: datetime
 ) -> str:
-    """Cria uma sessão nova e devolve o token (só vai para o cookie)."""
+    """Cria uma sessão nova e devolve o token (só vai para o cookie).
+    NÃO faz commit."""
     token = secrets.token_urlsafe(SESSION_TOKEN_BYTES)
     absolute = now + timedelta(hours=settings.session_absolute_hours)
     db.add(
@@ -108,7 +122,7 @@ def create_session(
             absolute_expires_at=absolute,
         )
     )
-    db.commit()
+    db.flush()
     return token
 
 
@@ -138,19 +152,29 @@ def resolve_session(
     ):
         return None
     if now - session.last_seen_at >= TOUCH_INTERVAL:
-        session.last_seen_at = now
-        session.idle_expires_at = min(
+        idle = min(
             now + timedelta(minutes=settings.session_idle_minutes), session.absolute_expires_at
         )
-        db.commit()
+        # Touch numa conexão/transação própria: o commit dele nunca leva junto
+        # escrita pendente de quem chamou (que precisa da auditoria; ADR 0004).
+        with DbSession(db.get_bind()) as touch:
+            touch.execute(
+                update(Session)
+                .where(Session.id == session.id)
+                .values(last_seen_at=now, idle_expires_at=idle)
+            )
+            touch.commit()
     return AuthContext(user=user, session=session, token=token)
 
 
-def revoke_session_by_token(db: DbSession, token: str, now: datetime) -> None:
+def revoke_session_by_token(db: DbSession, token: str, now: datetime) -> uuid.UUID | None:
+    """Revoga a sessão, se ativa, e devolve o id. NÃO faz commit."""
     session = db.scalar(select(Session).where(Session.token_hash == _sha256(token)))
-    if session is not None and session.revoked_at is None:
-        session.revoked_at = now
-        db.commit()
+    if session is None or session.revoked_at is not None:
+        return None
+    session.revoked_at = now
+    db.flush()
+    return session.id
 
 
 def roles_and_permissions(db: DbSession, user_id: uuid.UUID) -> tuple[list[str], list[str]]:

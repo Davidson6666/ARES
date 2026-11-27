@@ -5,6 +5,7 @@ comando, executado no servidor. Não existe rota HTTP para isso.
 
 Uso:
     uv run python -m app.cli create-admin --email admin@exemplo.local --display-name "Admin"
+    uv run python -m app.cli verify-audit
 
 Conecta como ``ares_owner`` (ARES_MIGRATION_DATABASE_URL). A senha é
 pedida no terminal (sem eco), duas vezes. ``--password-stdin``
@@ -21,6 +22,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session as DbSession
 
+from app.audit import service as audit
 from app.auth import passwords
 from app.auth.models import Role, User, UserRole
 from app.auth.service import normalize_email
@@ -68,13 +70,38 @@ def create_admin(engine: Engine, email: str, display_name: str, password: str) -
         )
         db.add(user)
         db.flush()
-        db.add(
-            UserRole(
-                user_id=user.id, role_id=role_id, granted_by=None, granted_at=datetime.now(UTC)
-            )
+        now = datetime.now(UTC)
+        db.add(UserRole(user_id=user.id, role_id=role_id, granted_by=None, granted_at=now))
+        audit.record(
+            db,
+            action="user.bootstrap_admin",
+            result="success",
+            actor_type="system",
+            resource_type="user",
+            resource_id=str(user.id),
+            details={"role": SUPER_ADMIN},
+            now=now,
         )
         db.commit()
         return user.id
+
+
+def verify_audit(
+    engine: Engine, expected_head: tuple[int, bytes] | None = None
+) -> audit.VerifyResult:
+    with DbSession(engine) as db:
+        return audit.verify_chain(db, expected_head=expected_head)
+
+
+def parse_head(value: str) -> tuple[int, bytes]:
+    try:
+        raw_id, raw_hash = value.split(":", 1)
+        digest = bytes.fromhex(raw_hash)
+        if len(digest) != 32:
+            raise ValueError
+        return int(raw_id), digest
+    except ValueError:
+        raise CliError("--expect-head deve ser <id>:<entry_hash em hex>.") from None
 
 
 def _read_password(from_stdin: bool) -> str:
@@ -93,6 +120,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     create.add_argument("--email", required=True)
     create.add_argument("--display-name", required=True)
     create.add_argument("--password-stdin", action="store_true")
+    verify = sub.add_parser("verify-audit", help="Confere o encadeamento da auditoria.")
+    verify.add_argument(
+        "--expect-head",
+        help="Âncora <id>:<entry_hash> anotada antes, fora do servidor. Detecta "
+        "remoção das últimas entradas.",
+    )
     args = parser.parse_args(argv)
 
     # Usa o dono do schema (ares_owner), não o usuário da API: o ares_app não
@@ -102,6 +135,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("ARES_MIGRATION_DATABASE_URL não definido (ver .env.example).", file=sys.stderr)
         return 2
     engine = build_engine(settings.migration_database_url.get_secret_value())
+    if args.command == "verify-audit":
+        try:
+            anchor = parse_head(args.expect_head) if args.expect_head else None
+            result = verify_audit(engine, anchor)
+        except CliError as exc:
+            print(f"Erro: {exc}", file=sys.stderr)
+            return 1
+        finally:
+            engine.dispose()
+        if result.ok:
+            print(f"Auditoria íntegra: {result.checked} entradas conferidas.")
+            if result.head_id is not None and result.head_hash is not None:
+                print(
+                    f"Cabeça (guarde fora do servidor): {result.head_id}:{result.head_hash.hex()}"
+                )
+            if anchor is None:
+                print("Sem --expect-head: remoção das últimas entradas não é detectada.")
+            return 0
+        print(
+            f"FALHA na auditoria: entrada {result.first_bad_id} ({result.problem}); "
+            f"{result.checked} entradas anteriores conferem.",
+            file=sys.stderr,
+        )
+        return 3
     try:
         user_id = create_admin(
             engine, args.email, args.display_name, _read_password(args.password_stdin)

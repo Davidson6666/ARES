@@ -5,11 +5,13 @@ import binascii
 import re
 import uuid
 
+import structlog
 from fastapi import APIRouter, Depends, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
+from app.audit import service as audit
 from app.auth import passwords, service
 from app.auth.dependencies import (
     SESSION_COOKIE,
@@ -29,6 +31,14 @@ from app.core.rate_limit import client_key
 
 router = APIRouter(prefix="/api/v1")
 
+log = structlog.get_logger("ares.auth")
+
+
+def _request_id(request: Request) -> str | None:
+    rid: str | None = getattr(request.state, "request_id", None)
+    return rid
+
+
 _INVALID_CREDENTIALS = ApiError(401, "invalid_credentials", "E-mail ou senha inválidos.")
 
 
@@ -38,6 +48,13 @@ class LoginRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     # Sem política aqui (só no cadastro); limite para não aceitar corpo enorme.
     password: str = Field(min_length=1, max_length=1024)
+
+    @field_validator("email")
+    @classmethod
+    def _no_control_chars(cls, value: str) -> str:
+        if any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError("caractere de controle")
+        return value
 
 
 class MeResponse(BaseModel):
@@ -78,6 +95,8 @@ def login(
         client_key(request.client.host if request.client else None)
     )
     if retry_after is not None:
+        # Só log operacional: sob ataque, não gravar no banco a cada tentativa.
+        log.warning("login.rate_limited", request_id=_request_id(request))
         raise ApiError(
             429,
             "rate_limited",
@@ -87,12 +106,29 @@ def login(
 
     now = utcnow()
     try:
-        user = service.authenticate(db, settings, body.email, body.password, now)
+        outcome = service.authenticate(db, settings, body.email, body.password, now)
     except passwords.HasherBusy:
+        log.warning("login.busy", request_id=_request_id(request))
         raise ApiError(
             503, "busy", "Serviço ocupado. Tente novamente.", headers={"Retry-After": "1"}
         ) from None
+    user = outcome.user
     if user is None:
+        # Conta desconhecida: nenhum dado do e-mail digitado é gravado.
+        audit.record(
+            db,
+            action="auth.login",
+            result="failure",
+            actor_type="user" if outcome.user_id else "anonymous",
+            actor_user_id=outcome.user_id,
+            resource_type="user" if outcome.user_id else None,
+            resource_id=str(outcome.user_id) if outcome.user_id else None,
+            reason=outcome.reason,
+            request_id=_request_id(request),
+            details={"locked_now": True} if outcome.locked_now else None,
+            now=now,
+        )
+        db.commit()
         raise _INVALID_CREDENTIALS
 
     # Fixação de sessão: qualquer sessão anterior deste navegador é revogada
@@ -101,6 +137,18 @@ def login(
     if previous:
         service.revoke_session_by_token(db, previous, now)
     token = service.create_session(db, settings, user, request.headers.get("user-agent"), now)
+    audit.record(
+        db,
+        action="auth.login",
+        result="success",
+        actor_type="user",
+        actor_user_id=user.id,
+        resource_type="user",
+        resource_id=str(user.id),
+        request_id=_request_id(request),
+        now=now,
+    )
+    db.commit()
 
     response.set_cookie(
         SESSION_COOKIE,
@@ -116,11 +164,25 @@ def login(
 
 @router.post("/auth/logout", status_code=204, dependencies=[Depends(allow_query())])
 def logout(
+    request: Request,
     response: Response,
     ctx: AuthContext = Depends(require_session),
     db: DbSession = Depends(get_db),
 ) -> Response:
-    service.revoke_session_by_token(db, ctx.token, utcnow())
+    now = utcnow()
+    session_id = service.revoke_session_by_token(db, ctx.token, now)
+    audit.record(
+        db,
+        action="auth.logout",
+        result="success",
+        actor_type="user",
+        actor_user_id=ctx.user.id,
+        resource_type="session",
+        resource_id=str(session_id) if session_id else None,
+        request_id=_request_id(request),
+        now=now,
+    )
+    db.commit()
     response.status_code = 204
     response.delete_cookie(SESSION_COOKIE, path="/", secure=True, httponly=True, samesite="strict")
     return response

@@ -9,10 +9,10 @@ validação e exceções não tratadas, para que nenhum caminho devolva o format
 padrão do FastAPI (``{"detail": ...}``) nem detalhes internos.
 """
 
-import logging
 from collections.abc import Mapping
 from typing import Any
 
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -21,7 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.request_id import HEADER as REQUEST_ID_HEADER
 
-logger = logging.getLogger("ares.errors")
+logger = structlog.get_logger("ares.errors")
 
 _HTTP_CODES: dict[int, tuple[str, str]] = {
     400: ("bad_request", "A requisição não pôde ser interpretada."),
@@ -97,9 +97,7 @@ async def _validation_exception(request: Request, exc: Exception) -> JSONRespons
 
 async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
     # Detalhe só no log do servidor; resposta genérica (v1.1, seção 14.9).
-    logger.exception(
-        "erro não tratado", extra={"request_id": getattr(request.state, "request_id", None)}
-    )
+    logger.exception("erro não tratado")
     return error_response(request, 500, "internal_error", "Erro interno.")
 
 
@@ -115,12 +113,21 @@ async def _database_unavailable(request: Request, exc: Exception) -> JSONRespons
     if isinstance(exc, OperationalError) or (
         isinstance(exc, DBAPIError) and exc.connection_invalidated
     ):
-        logger.warning(
-            "banco indisponível", extra={"request_id": getattr(request.state, "request_id", None)}
-        )
+        logger.warning("banco indisponível", **_db_error_fields(exc))
         code, message = _HTTP_CODES[503]
         return error_response(request, 503, code, message, headers={"Retry-After": "5"})
-    return await _unhandled_exception(request, exc)
+    # Sem traceback nem mensagem: a mensagem do PostgreSQL pode conter o valor
+    # enviado (ex.: 'invalid input syntax ... "<valor>"').
+    logger.error("erro de banco", **_db_error_fields(exc))
+    return error_response(request, 500, "internal_error", "Erro interno.")
+
+
+def _db_error_fields(exc: Exception) -> dict[str, str | None]:
+    orig = getattr(exc, "orig", None)
+    return {
+        "error_type": type(orig or exc).__name__,
+        "sqlstate": getattr(orig, "sqlstate", None),
+    }
 
 
 def register_exception_handlers(app: FastAPI) -> None:

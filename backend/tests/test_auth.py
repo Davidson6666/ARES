@@ -420,6 +420,7 @@ def test_concurrent_failures_are_all_counted(app_engine: Engine, admin_engine: E
         with DbSession(app_engine) as db:
             barrier.wait()
             service.authenticate(db, settings, "race@ares.test", "errada-errada", datetime.now(UTC))
+            db.commit()
 
     threads = [threading.Thread(target=attempt) for _ in range(attempts)]
     for t in threads:
@@ -518,3 +519,74 @@ def test_database_down_is_503() -> None:
     assert r.status_code == 503
     assert r.json()["code"] == "dependency_unavailable"
     assert "127.0.0.1" not in r.text
+
+
+def test_login_rejects_control_chars_in_email(client: TestClient) -> None:
+    r = client.post(
+        "/api/v1/auth/login", json={"email": "a\u0000b@ares.test", "password": PASSWORD}
+    )
+    assert r.status_code == 422
+    assert "a\u0000b" not in r.text
+
+
+def test_db_error_value_never_reaches_log_or_response(
+    migrated_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import json
+
+    from app.core.database import build_engine
+    from app.core.logging import configure_logging
+
+    engine = build_engine(migrated_database_url)
+    app = create_app(_settings(), engine=engine)
+
+    @app.get("/_dberr")
+    def dberr() -> None:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT CAST(:v AS integer)"), {"v": "valor-secreto-xyz"})
+
+    buf = io.StringIO()
+    configure_logging("INFO", stream=buf)
+    try:
+        with TestClient(app, raise_server_exceptions=False) as c:
+            r = c.get("/_dberr")
+    finally:
+        configure_logging("INFO")
+        engine.dispose()
+    assert r.status_code == 500
+    assert "valor-secreto-xyz" not in r.text
+    assert "valor-secreto-xyz" not in buf.getvalue()
+    [entry] = [json.loads(x) for x in buf.getvalue().splitlines() if '"erro de banco"' in x]
+    assert entry["sqlstate"] == "22P02"
+
+
+def test_engine_built_by_app_hides_parameters() -> None:
+    from app.core.database import build_engine
+
+    assert build_engine("postgresql+psycopg://u:p@127.0.0.1:1/x").hide_parameters is True
+
+
+def test_session_touch_does_not_commit_callers_pending_write(
+    app_engine: Engine, admin_engine: Engine
+) -> None:
+    make_user(admin_engine, "pend@ares.test")
+    settings = _settings()
+    with DbSession(app_engine) as db:
+        outcome = service.authenticate(db, settings, "pend@ares.test", PASSWORD, datetime.now(UTC))
+        assert outcome.user is not None
+        token = service.create_session(db, settings, outcome.user, None, datetime.now(UTC))
+        db.commit()
+    later = datetime.now(UTC) + timedelta(minutes=5)  # força o touch
+    with DbSession(app_engine) as db:
+        user = db.scalar(select(User).where(User.email == "pend@ares.test"))
+        assert user is not None
+        user.display_name = "alterado sem auditoria"
+        db.flush()  # escrita já enviada ao banco, sem commit
+        assert service.resolve_session(db, settings, token, later) is not None
+        db.rollback()
+    with DbSession(admin_engine) as db:
+        user = db.scalar(select(User).where(User.email == "pend@ares.test"))
+        sess = db.scalar(select(Session))
+        assert user is not None and user.display_name == "pend"  # não foi gravada
+        assert sess is not None and sess.last_seen_at >= later - timedelta(seconds=1)
