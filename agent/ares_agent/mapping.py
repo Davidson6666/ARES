@@ -84,7 +84,6 @@ SPECS: dict[int, Spec] = {
         "group.member_added",
         {
             "MemberName": "member",
-            "MemberSid": "member_sid",
             "TargetUserName": "group",
             "SubjectUserName": "actor_user",
             "SubjectDomainName": "actor_domain",

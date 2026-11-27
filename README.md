@@ -123,7 +123,7 @@ uv run python -m ares_agent status                                   # estado lo
 | 4648 | logon com credencial explícita | usuário e domínio de origem, usuário e domínio alvo, processo |
 | 4672 | privilégios especiais atribuídos | usuário, domínio |
 | 4720 | conta criada | conta e domínio, quem criou e domínio |
-| 4732 | membro adicionado a grupo | membro, SID do membro, grupo, quem alterou e domínio |
+| 4732 | membro adicionado a grupo | membro, grupo, quem alterou e domínio |
 
   Finalidade: telemetria de autenticação e de contas, para a detecção que virá em fases seguintes. Todos entram no Core como `personal`. **Quem lê:** quem tem a permissão `events.read` (ainda sem escopo por classificação). **Retenção:** o Core ainda não define prazo para eventos; a fila local guarda no máximo `queue_max_events` eventos (50 000 por padrão) e não é cifrada. Nunca se coleta linha de comando, senha, conteúdo de arquivo nem a mensagem em texto livre do evento.
 - Testes: `uv run pytest` em `agent/` (não precisa de banco). O teste de integração contra o Core real fica em `backend/tests/test_agent_integration.py`.
