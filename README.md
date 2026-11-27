@@ -11,8 +11,8 @@ Nome de trabalho: **ARES**. Expansão provisória: *Adaptive Response & Event Se
 | Item | Estado |
 |---|---|
 | Especificação | Escrita (Especificação Geral v1.1 + Complemento v1.2). |
-| Código | **Nenhuma funcionalidade implementada.** |
-| Fase atual | 01a — preparação (item 1 da seção 21.13 da v1.1). |
+| Código | Core (fases 01a e 01b, com testes) em `backend/`; agente Windows (fase 04a) em desenvolvimento em `agent/`. Sem frontend. |
+| Fase atual | 04a — primeiro agente, como processo do usuário ([ADR 0007](docs/adr/0007-agente-windows-04a.md)). |
 
 ## Documentação
 
@@ -87,6 +87,46 @@ Usuários do banco:
 | `ares_admin` | Bootstrap do contêiner e testes de banco (`ARES_TEST_ADMIN_DATABASE_URL`) | Superusuário. Nem a API nem as migrações usam. |
 | `ares_owner` | Migrações (`ARES_MIGRATION_DATABASE_URL`) | Dono do banco e do schema; não é superusuário. |
 | `ares_app` | API (`ARES_DATABASE_URL`) | Só o que cada migração concede, tabela por tabela; sem DDL; só conecta no banco `ares`. |
+
+## Agente Windows (fase 04a)
+
+O agente (`agent/`) é só de telemetria: lê o Security log (EventIDs 4624, 4625, 4648, 4672, 4720 e 4732), guarda numa fila local limitada e envia ao Core por HTTPS com polling. Não recebe nem executa comandos do servidor. Desenho e decisões: [ADR 0007](docs/adr/0007-agente-windows-04a.md).
+
+**Antes de rodar**, o Security log só é legível por administrador elevado ou por membro do grupo `Event Log Readers`. Para o caminho sem elevação, um administrador adiciona o usuário ao grupo e o usuário faz novo logon (o agente confere o acesso ao iniciar e diz o que falta):
+
+```powershell
+# Em PowerShell elevado (altera o sistema: faça de propósito)
+net localgroup "Event Log Readers" $env:USERNAME /add
+```
+
+No Core, com termo de autorização registrado (ver acima), um administrador cria o agente (`POST /api/v1/agents`) e recebe o token de enrolamento. No host do agente:
+
+```powershell
+cd agent
+uv sync
+uv run python -m ares_agent enroll --server http://127.0.0.1:8000   # pede o token sem eco
+uv run python -m ares_agent run                                      # Ctrl+C para parar
+uv run python -m ares_agent status                                   # estado local, sem segredos
+```
+
+- `http://` só é aceito em loopback (`localhost`, `127.0.0.1`, `::1`); fora dele, `https://`. Não existe opção para desligar a verificação de certificado; para uma CA local, use `ca_file` no `config.toml`.
+- `enroll --force` enrola de novo e **descarta** a fila e o marcador do agente anterior (avisa quantos eventos).
+- O agente não herda proxy nem CA do ambiente (`HTTP_PROXY`, `SSL_CERT_FILE`).
+- A credencial fica no Gerenciador de Credenciais do Windows, nunca em arquivo. O token de enrolamento nunca é argumento de linha de comando (iria para o histórico do shell).
+- Estado, fila e log em `%LOCALAPPDATA%\ARES\agent` (`ARES_AGENT_HOME` muda a pasta). A coleta começa pelos eventos **novos**: o histórico do log não é lido.
+- O agente coleta dado pessoal. Use só em máquina própria ou com autorização; a seção de privacidade e LGPD do complemento continua em branco de propósito. O que sai do host:
+
+| EventID | Evento | Campos enviados (nada além destes) |
+|---|---|---|
+| 4624 | logon bem-sucedido | usuário, domínio, tipo de logon, estação, endereço de origem, processo |
+| 4625 | logon falho | os mesmos, mais status e substatus |
+| 4648 | logon com credencial explícita | usuário e domínio de origem, usuário e domínio alvo, processo |
+| 4672 | privilégios especiais atribuídos | usuário, domínio |
+| 4720 | conta criada | conta e domínio, quem criou e domínio |
+| 4732 | membro adicionado a grupo | membro, SID do membro, grupo, quem alterou e domínio |
+
+  Finalidade: telemetria de autenticação e de contas, para a detecção que virá em fases seguintes. Todos entram no Core como `personal`. **Quem lê:** quem tem a permissão `events.read` (ainda sem escopo por classificação). **Retenção:** o Core ainda não define prazo para eventos; a fila local guarda no máximo `queue_max_events` eventos (50 000 por padrão) e não é cifrada. Nunca se coleta linha de comando, senha, conteúdo de arquivo nem a mensagem em texto livre do evento.
+- Testes: `uv run pytest` em `agent/` (não precisa de banco). O teste de integração contra o Core real fica em `backend/tests/test_agent_integration.py`.
 
 ## Stack proposta
 

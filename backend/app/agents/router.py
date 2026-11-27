@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session as DbSession
 
 from app.agents import service
+from app.agents.deps import AgentContext, limited_agent, lock_active_agent
 from app.agents.models import Agent
 from app.audit import service as audit
 from app.auth.dependencies import (
@@ -39,6 +40,7 @@ log = structlog.get_logger("ares.agents")
 
 _require_configure = require_permission("modules.configure")
 _NO_STORE = {"Cache-Control": "no-store"}
+_LAST_SEEN_INTERVAL = timedelta(seconds=30)
 _MODULE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
@@ -203,6 +205,7 @@ def create_agent(
 
 @router.post(
     "/agents/enroll",
+    status_code=201,
     response_model=Enrolled,
     dependencies=[Depends(require_json), Depends(allow_query())],
 )
@@ -243,6 +246,29 @@ def enroll(
     return Enrolled(
         agent_id=agent.id, module=agent.module, tenant_id=agent.tenant_id, credential=credential
     )
+
+
+@router.post(
+    "/agents/heartbeat",
+    status_code=204,
+    dependencies=[Depends(allow_query())],
+)
+def heartbeat(
+    ctx: AgentContext = Depends(limited_agent),
+    db: DbSession = Depends(get_db),
+) -> Response:
+    """Marca o agente como visto (``last_seen_at``) sem enviar evento.
+
+    Sem corpo e sem auditoria: é frequente e não muda estado de segurança. O
+    limite por agente (429) é o mesmo da ingestão.
+    """
+    agent = lock_active_agent(db, ctx.agent.id)
+    now = utcnow()
+    # Como na ingestão: não grava a cada chamada (cada UPDATE deixa tupla morta).
+    if agent.last_seen_at is None or now - agent.last_seen_at >= _LAST_SEEN_INTERVAL:
+        agent.last_seen_at = now
+    db.commit()
+    return Response(status_code=204, headers=_NO_STORE)
 
 
 @router.post(

@@ -86,3 +86,36 @@ def require_agent(request: Request, db: DbSession = Depends(get_db)) -> AgentCon
     # continuam carregados (expire_on_commit=False); quem grava reabre transação.
     db.commit()
     return ctx
+
+
+def limited_agent(request: Request, ctx: AgentContext = Depends(require_agent)) -> AgentContext:
+    """Autentica o agente e aplica o limite de requisições por agente (429)."""
+    retry_after = request.app.state.agent_request_limiter.hit(str(ctx.agent.id))
+    if retry_after is not None:
+        log.warning("ingest.rate_limited", agent_id=str(ctx.agent.id), kind="requests")
+        raise ApiError(
+            429,
+            "rate_limited",
+            "Limite de requisições do agente excedido.",
+            headers={"Retry-After": str(retry_after)},
+        )
+    return ctx
+
+
+def lock_active_agent(db: DbSession, agent_id: uuid.UUID) -> Agent:
+    """Relê o agente travando a linha (FOR KEY SHARE) e exige ``status = 'active'``.
+
+    Um ``revoke`` (FOR UPDATE) que chegou durante a leitura do corpo termina antes
+    ou espera esta requisição acabar. KEY SHARE não conflita com o UPDATE de
+    ``last_seen_at`` de outra requisição do mesmo agente (FOR SHARE daria deadlock).
+    """
+    agent = db.scalar(
+        select(Agent)
+        .where(Agent.id == agent_id)
+        .with_for_update(read=True, key_share=True)
+        # Sem isto o SQLAlchemy devolve o objeto já carregado (status antigo).
+        .execution_options(populate_existing=True)
+    )
+    if agent is None or agent.status != "active":
+        raise _unauthenticated()
+    return agent

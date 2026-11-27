@@ -152,7 +152,7 @@ def test_end_to_end_from_bootstrap_to_event_and_audit_trail(
         # 4. O agente se enrola com o token e envia um lote.
         agent = TestClient(app, base_url="https://testserver")
         enrolled = enroll(agent, created.json()["enrollment_token"], host_id="lab-host-1")
-        assert enrolled.status_code == 200
+        assert enrolled.status_code == 201
         credential = enrolled.json()["credential"]
         agent_id = created.json()["agent_id"]
         good, bad = make_event(agent_id), make_event(agent_id, schema_version=7)
