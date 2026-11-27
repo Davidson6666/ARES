@@ -47,12 +47,14 @@ class ApiError(Exception):
         code: str,
         message: str,
         headers: Mapping[str, str] | None = None,
+        details: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(code)
         self.status_code = status_code
         self.code = code
         self.message = message
         self.headers = headers
+        self.details = details
 
 
 def error_response(
@@ -104,7 +106,9 @@ async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse
 
 async def _api_error(request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, ApiError)
-    return error_response(request, exc.status_code, exc.code, exc.message, headers=exc.headers)
+    return error_response(
+        request, exc.status_code, exc.code, exc.message, details=exc.details, headers=exc.headers
+    )
 
 
 async def _database_unavailable(request: Request, exc: Exception) -> JSONResponse:

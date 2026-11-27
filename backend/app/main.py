@@ -14,6 +14,8 @@ from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.rate_limit import SlidingWindowLimiter
 from app.core.request_id import request_id_middleware
+from app.events.bus import PostgresEventBus
+from app.ingress.router import router as ingress_router
 
 
 def create_app(settings: Settings | None = None, engine: Engine | None = None) -> FastAPI:
@@ -41,6 +43,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.state.mfa_limiter = SlidingWindowLimiter(
         limit=settings.login_rate_limit_per_minute, window_seconds=60
     )
+    app.state.event_bus = PostgresEventBus()
     app.state.enroll_limiter = SlidingWindowLimiter(
         limit=settings.enroll_rate_limit_per_minute, window_seconds=60
     )
@@ -59,6 +62,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(auth_router)
     app.include_router(mfa_router)
     app.include_router(agents_router)
+    app.include_router(ingress_router)
     app.include_router(audit_router)
     return app
 
