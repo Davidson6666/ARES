@@ -50,5 +50,18 @@ class Settings(BaseSettings):
     login_lockout_base_seconds: int = Field(default=60, ge=1)
     login_lockout_max_seconds: int = Field(default=15 * 60, ge=1)
 
+    # Agentes e eventos (ADR 0006). Limites por agente, em memória.
+    agent_requests_per_minute: int = Field(default=120, ge=1, le=100_000)
+    agent_events_per_minute: int = Field(default=6000, ge=1, le=10_000_000)
+    enroll_rate_limit_per_minute: int = Field(default=10, ge=1, le=1000)
+    # Falhas de credencial de agente por IP (cada falha custa uma consulta ao banco).
+    agent_auth_failures_per_minute: int = Field(default=30, ge=1, le=100_000)
+    # Corpo lido por inteiro em no máximo isto (corpo gotejado não prende conexão).
+    ingest_body_timeout_seconds: float = Field(default=15.0, gt=0, le=300)
+    # Limite de corpo das rotas JSON comuns; /events tem o seu (2 MB, no envelope).
+    max_body_bytes: int = Field(default=16 * 1024, ge=1024, le=1024 * 1024)
+    # Evento com occurred_at além disto no futuro é aceito e marcado.
+    occurred_at_future_seconds: int = Field(default=300, ge=0)
+
     # Recuperação de conta (ADR 0005): limite por IP, em memória.
     recovery_rate_limit_per_minute: int = Field(default=5, ge=1, le=1000)

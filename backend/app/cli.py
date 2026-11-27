@@ -7,6 +7,9 @@ Uso:
     uv run python -m app.cli create-admin --email admin@exemplo.local --display-name "Admin"
     uv run python -m app.cli verify-audit [--expect-head <id>:<hash>]
     uv run python -m app.cli generate-mfa-key
+    uv run python -m app.cli record-authorization --reference X --description Y --days 30
+    uv run python -m app.cli revoke-authorization --id <uuid>
+    uv run python -m app.cli purge-expired
     uv run python -m app.cli issue-recovery --email voce@exemplo.local
 
 Conecta como ``ares_owner`` (ARES_MIGRATION_DATABASE_URL). A senha é
@@ -19,11 +22,12 @@ import getpass
 import sys
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session as DbSession
 
+from app.agents.models import OperatorAuthorization
 from app.audit import service as audit
 from app.auth import crypto, mfa, passwords
 from app.auth.models import Role, User, UserRole
@@ -111,6 +115,83 @@ def issue_recovery(engine: Engine, email: str) -> str:
         return token
 
 
+def record_authorization(engine: Engine, reference: str, description: str, days: int) -> uuid.UUID:
+    """Registra o termo de autorização do operador (CLAUDE.md 9.4). Só pelo CLI,
+    no servidor: não existe rota HTTP para isso. Auditado como ``system``."""
+    if not 1 <= days <= 365:
+        raise CliError("--days deve ficar entre 1 e 365.")
+    if not reference.strip() or not description.strip():
+        raise CliError("Referência e descrição são obrigatórias.")
+    if any(ord(c) < 32 or ord(c) == 127 for c in reference + description):
+        raise CliError("Referência e descrição não aceitam caracteres de controle.")
+    now = datetime.now(UTC)
+    with DbSession(engine) as db:
+        row = OperatorAuthorization(
+            id=uuid.uuid4(),
+            reference=reference.strip(),
+            description=description.strip(),
+            valid_from=now,
+            valid_until=now + timedelta(days=days),
+            recorded_at=now,
+        )
+        db.add(row)
+        db.flush()
+        audit.record(
+            db,
+            action="authorization.recorded",
+            result="success",
+            actor_type="system",
+            resource_type="authorization",
+            resource_id=str(row.id),
+            details={"days": days},
+            now=now,
+        )
+        db.commit()
+        return row.id
+
+
+def revoke_authorization(engine: Engine, authorization_id: uuid.UUID) -> None:
+    now = datetime.now(UTC)
+    with DbSession(engine) as db:
+        row = db.get(OperatorAuthorization, authorization_id, with_for_update=True)
+        if row is None:
+            raise CliError("Termo não encontrado.")
+        if row.revoked_at is not None:
+            raise CliError("Termo já estava revogado.")
+        row.revoked_at = now
+        audit.record(
+            db,
+            action="authorization.revoked",
+            result="success",
+            actor_type="system",
+            resource_type="authorization",
+            resource_id=str(row.id),
+            now=now,
+        )
+        db.commit()
+
+
+def purge_expired(engine: Engine) -> dict[str, int]:
+    """Remove dados vencidos (complemento 2.1): ingest_records com mais de 7
+    dias, idempotency_keys vencidas e tokens de enrolamento vencidos e NÃO usados. Roda como
+    ``ares_owner``; o ``ares_app`` não tem DELETE."""
+    now = datetime.now(UTC)
+    removed: dict[str, int] = {}
+    with engine.begin() as conn:
+        for table, column, limit, extra in (
+            ("ingest_records", "received_at", now - timedelta(days=7), ""),
+            ("idempotency_keys", "expires_at", now, ""),
+            # Só os NÃO usados: o token usado fica como rastro do enrolamento.
+            ("agent_enrollment_tokens", "expires_at", now, " AND used_at IS NULL"),
+        ):
+            # Nomes de tabela, coluna e condição são constantes acima, nunca entrada.
+            result = conn.execute(
+                text(f"DELETE FROM {table} WHERE {column} < :limit{extra}"), {"limit": limit}
+            )
+            removed[table] = result.rowcount
+    return removed
+
+
 def verify_audit(
     engine: Engine, expected_head: tuple[int, bytes] | None = None
 ) -> audit.VerifyResult:
@@ -148,6 +229,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub.add_parser("generate-mfa-key", help="Gera uma chave para ARES_MFA_KEY.")
     recovery = sub.add_parser("issue-recovery", help="Emite um token de recuperação de conta.")
     recovery.add_argument("--email", required=True)
+    authz = sub.add_parser(
+        "record-authorization", help="Registra o termo de autorização do operador."
+    )
+    authz.add_argument("--reference", required=True, help="Documento ou identificador do termo.")
+    authz.add_argument(
+        "--description", required=True, help="Escopo: o que e onde pode ser monitorado."
+    )
+    authz.add_argument("--days", type=int, required=True, help="Validade em dias (1 a 365).")
+    revoke_authz = sub.add_parser("revoke-authorization", help="Revoga um termo de autorização.")
+    revoke_authz.add_argument("--id", required=True)
+    sub.add_parser("purge-expired", help="Remove dados vencidos (ingest_records etc.).")
     verify = sub.add_parser("verify-audit", help="Confere o encadeamento da auditoria.")
     verify.add_argument(
         "--expect-head",
@@ -192,6 +284,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 3
+    if args.command in ("record-authorization", "revoke-authorization", "purge-expired"):
+        try:
+            if args.command == "record-authorization":
+                new_id = record_authorization(engine, args.reference, args.description, args.days)
+                print(f"Termo registrado: {new_id}")
+            elif args.command == "revoke-authorization":
+                try:
+                    target = uuid.UUID(args.id)
+                except ValueError:
+                    raise CliError("--id deve ser um UUID.") from None
+                revoke_authorization(engine, target)
+                print("Termo revogado.")
+            else:
+                for table, count in purge_expired(engine).items():
+                    print(f"{table}: {count} removidos")
+        except CliError as exc:
+            print(f"Erro: {exc}", file=sys.stderr)
+            return 1
+        finally:
+            engine.dispose()
+        return 0
     if args.command == "issue-recovery":
         try:
             token = issue_recovery(engine, args.email)

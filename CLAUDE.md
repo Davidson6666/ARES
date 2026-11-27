@@ -67,6 +67,9 @@ Projeto de portfólio, sem operação real. Repositório ainda sem código de fu
 | Formato do corpo de erro: plano (complemento 3.4) × aninhado em `error` (exemplo da v1.1, 15.2) | Implementado plano, porque o complemento prevalece | Baixo; a 15.2 da v1.1 não foi corrigida explicitamente | Próxima revisão da spec |
 | `DELETE /auth/mfa` aceita "próprio usuário ou `users.write`" (complemento 3.2), mas a rota não tem `{id}` | Rota própria para administrador desativar o MFA de outro usuário, ou corrigir o texto do complemento | Só o próprio usuário pode desativar, e papéis administrativos não podem | Antes da gestão de usuários (01b) |
 | `secret_ref` "aponta para cofre" (complemento 2.1; seção 6.1 deste arquivo) × ADR 0005: guarda a versão da chave, e o segredo cifrado fica em `secret_ciphertext` | Alinhar o complemento e a seção 6.1 ao ADR 0005 | Documentos divergentes | Próxima revisão da spec |
+| `POST /agents/enroll` é pública, mas o complemento 3.1 e a seção 7.1 deste arquivo dizem que o público tem só `/health` e rotas de auth; a rota também não está na tabela 3.2 | Corrigir o complemento (3.1 e 3.2) e o histórico, ou mover a rota para o prefixo de auth | Rota pública com rate limit e corpo de 16 KB, sem previsão na spec | Próxima revisão da spec |
+| Evento acima de 64 KB e campo desconhecido no topo: o complemento 3.4 e a seção 6 pedem 413 e 422, mas a 3.3 diz que lote parcialmente inválido não derruba os válidos | Manter `rejected` dentro do 202 e corrigir o complemento, ou voltar ao 413/422 do lote inteiro | Implementado como `rejected` (ADR 0006) | Próxima revisão da spec |
+| `POST /events` aceita "agente ou engine" (complemento 3.2); só existe autenticação de agente | Autenticação de engine com a fase de módulos | Engine não consegue enviar eventos | Fase de módulos |
 | Parâmetro de query desconhecido → 400 (complemento 3.4) | Aplicar a todas as rotas ou só às de `/api/v1` | `/health?x=1` responde 200 hoje | Item 4 da 21.13 |
 
 **Não preencha a seção 5 do complemento sem o autor pedir.**
@@ -241,8 +244,8 @@ Cada mitigação tem teste de aceitação. Não marque como concluída sem o tes
 
 | Fase | Escopo |
 |---|---|
-| 01a | Marco 1: escopo mínimo da seção 21.13 (itens 1 a 4). Estimativa 3–4 semanas. (1) Repositório, estrutura mínima, ambiente e documentação base. (2) Core inicial com configuração e `/health`/`/ready`. (3) Conexão PostgreSQL e primeira migração testada. (4) Identidade, login, sessão e autorização mínima. |
-| 01b | Auditoria completa e eventos. Mais 2–3 semanas. |
+| 01a (concluída em 27/11/2026, com MFA e recuperação de conta) | Marco 1: escopo mínimo da seção 21.13 (itens 1 a 4). Estimativa 3–4 semanas. (1) Repositório, estrutura mínima, ambiente e documentação base. (2) Core inicial com configuração e `/health`/`/ready`. (3) Conexão PostgreSQL e primeira migração testada. (4) Identidade, login, sessão e autorização mínima. |
+| 01b | Auditoria completa e eventos. Mais 2–3 semanas. **Escopo escolhido pelo autor em 27/11/2026:** eventos (envelope v1, `POST /events`, `GET /events/{id}`), agentes e credenciais, termo de autorização do operador, e o item 7 da 21.13 (integração e recuperação). **Fora da 01b:** administração de usuários e papéis, módulos e configuração. Desenho em `docs/adr/0006`. |
 | 04a | Primeiro agente como processo do usuário. |
 | 04b | Windows Service. |
 | 05 | Forensics (investigações e evidências). |

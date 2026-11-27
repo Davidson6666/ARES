@@ -43,6 +43,8 @@ class User(Base):
     status: Mapped[str] = mapped_column(String(16), default="active")
     failed_login_count: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Escopo de leitura (ADR 0006): nulo lê tudo; com valor, só o próprio escopo.
+    tenant_id: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

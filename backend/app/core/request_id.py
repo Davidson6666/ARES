@@ -15,6 +15,7 @@ import structlog
 from fastapi import Request, Response
 
 HEADER = "X-Request-ID"
+_NO_STORE_PREFIXES = ("/api/v1/auth/", "/api/v1/agents", "/api/v1/events")
 log = structlog.get_logger("ares.access")
 
 
@@ -38,8 +39,10 @@ async def request_id_middleware(
         )
         raise
     response.headers[HEADER] = request_id
-    if request.url.path.startswith("/api/v1/auth/"):
-        # Respostas de autenticação carregam token CSRF, códigos e segredos.
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    if request.url.path.startswith(_NO_STORE_PREFIXES):
+        # Autenticação carrega token CSRF e segredos; agentes carregam credenciais
+        # e tokens; eventos podem trazer dado pessoal ou sensível.
         response.headers["Cache-Control"] = "no-store"
     log.info(
         "request",

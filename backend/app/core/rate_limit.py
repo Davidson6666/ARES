@@ -1,12 +1,13 @@
-"""Limite de taxa em memória, janela deslizante (ADR 0003).
+"""Limite de taxa em memória, janela deslizante (ADR 0003 e 0006).
 
-Usado por IP no login. O IP só existe em memória e some ao fim da janela;
-nunca é persistido. Vale para um processo: com vários workers, cada um
-conta à parte (revisar ao escalar; ver ADR 0003).
+Usado por IP no login e por agente na ingestão de eventos. O IP só existe em
+memória e some ao fim da janela; nunca é persistido. Vale para um processo:
+com vários workers, cada um conta à parte (revisar ao escalar).
 
-Memória limitada: no máximo ``max_keys`` chaves. Cheio, a chave usada há
-mais tempo é descartada (LRU, O(1)). Isso pode zerar a contagem de quem
-está há mais tempo parado, mas nunca deixa a memória crescer sem limite.
+Cada tentativa tem um ``cost`` (1 por padrão; na ingestão, o número de eventos
+do lote). Memória limitada: no máximo ``max_keys`` chaves. Cheio, a chave usada
+há mais tempo é descartada (LRU, O(1)). Isso pode zerar a contagem de quem está
+há mais tempo parado, mas nunca deixa a memória crescer sem limite.
 """
 
 import ipaddress
@@ -33,6 +34,14 @@ def client_key(host: str | None) -> str:
     return str(ip)
 
 
+class _Window:
+    __slots__ = ("hits", "total")
+
+    def __init__(self) -> None:
+        self.hits: deque[tuple[float, int]] = deque()
+        self.total = 0
+
+
 class SlidingWindowLimiter:
     def __init__(
         self,
@@ -45,28 +54,36 @@ class SlidingWindowLimiter:
         self.window = window_seconds
         self._clock = clock
         self._max_keys = max_keys
-        self._hits: OrderedDict[str, deque[float]] = OrderedDict()
+        self._windows: OrderedDict[str, _Window] = OrderedDict()
         # Rotas síncronas rodam em threadpool: acesso concorrente.
         self._lock = threading.Lock()
 
     def __len__(self) -> int:
-        return len(self._hits)
+        return len(self._windows)
 
-    def hit(self, key: str) -> int | None:
-        """Registra uma tentativa. Devolve ``None`` se permitida, ou os
-        segundos até a próxima tentativa (para ``Retry-After``)."""
+    def hit(self, key: str, cost: int = 1) -> int | None:
+        """Registra ``cost`` unidades. Devolve ``None`` se permitido, ou os
+        segundos até haver capacidade (para ``Retry-After``). Negado não consome."""
         now = self._clock()
         with self._lock:
-            hits = self._hits.get(key)
-            if hits is None:
-                while len(self._hits) >= self._max_keys:
-                    self._hits.popitem(last=False)
-                hits = self._hits[key] = deque()
+            win = self._windows.get(key)
+            if win is None:
+                while len(self._windows) >= self._max_keys:
+                    self._windows.popitem(last=False)
+                win = self._windows[key] = _Window()
             else:
-                self._hits.move_to_end(key)
-            while hits and hits[0] <= now - self.window:
-                hits.popleft()
-            if len(hits) >= self.limit:
-                return max(1, math.ceil(hits[0] + self.window - now))
-            hits.append(now)
-            return None
+                self._windows.move_to_end(key)
+            while win.hits and win.hits[0][0] <= now - self.window:
+                win.total -= win.hits.popleft()[1]
+            if win.total + cost <= self.limit:
+                win.hits.append((now, cost))
+                win.total += cost
+                return None
+            if cost > self.limit:
+                return math.ceil(self.window)  # nunca cabe; espera a janela inteira
+            freed = 0
+            for stamp, units in win.hits:
+                freed += units
+                if win.total - freed + cost <= self.limit:
+                    return max(1, math.ceil(stamp + self.window - now))
+            return max(1, math.ceil(self.window))

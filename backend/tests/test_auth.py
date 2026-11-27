@@ -632,12 +632,12 @@ def test_session_touch_does_not_commit_callers_pending_write(
     with DbSession(app_engine) as db:
         user = db.scalar(select(User).where(User.email == "pend@ares.test"))
         assert user is not None
-        user.display_name = "alterado sem auditoria"
+        user.failed_login_count = 7  # coluna que o ares_app pode atualizar
         db.flush()  # escrita já enviada ao banco, sem commit
         assert service.resolve_session(db, settings, token, later) is not None
         db.rollback()
     with DbSession(admin_engine) as db:
         user = db.scalar(select(User).where(User.email == "pend@ares.test"))
         sess = db.scalar(select(Session))
-        assert user is not None and user.display_name == "pend"  # não foi gravada
+        assert user is not None and user.failed_login_count == 0  # não foi gravada
         assert sess is not None and sess.last_seen_at >= later - timedelta(seconds=1)
