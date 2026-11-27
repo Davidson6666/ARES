@@ -117,12 +117,14 @@ Os testes de mutação confirmam: sem o termo vigente no `require_agent`, sem o 
 | `agents.host_id` e `activated_at` não estavam no ADR | Registrados. `host_id` é informativo, sem verificação; o vínculo da credencial ao host continua em aberto. |
 | `purge-expired` apagava tokens de enrolamento usados | Só apaga tokens vencidos **e não usados**; o token usado fica como rastro. |
 
-### Divergências em relação à spec (decisão do autor pendente)
+### Divergências em relação à spec (decididas pelo autor em 27/11/2026)
 
-- **`POST /agents/enroll` é público.** O complemento 3.1 e o CLAUDE.md 7.1 dizem que o público tem só `/health` e rotas de auth. A rota também não está na tabela 3.2.
-- **Evento grande demais e campo desconhecido no topo** viram `rejected` dentro do 202. O complemento 3.4 pede 413 para "64 KB por evento" e a seção 6 pede 422 para campo desconhecido, mas a seção 3.3 diz que lote parcialmente inválido não derruba os válidos. O código segue a 3.3.
-- **`POST /events` "agente ou engine":** só existe autenticação de agente. A de engine fica com a fase de módulos.
-- **Enum de `severity`** (`info`, `low`, `medium`, `high`, `critical`): a spec não define os valores.
+O código ficou como estava; o complemento foi corrigido (v1.2.1).
+
+- **`POST /agents/enroll` fica público.** O agente ainda não tem credencial, então o token de enrolamento (uso único, 24 h, só o hash no banco) é a autenticação. Mover a rota para `/auth` só trocaria o prefixo. O complemento 3.1 e 3.2 e o CLAUDE.md 7.1 e 7.3 agora listam a rota.
+- **Falha por evento vira `rejected` no 202.** Evento acima de 64 KB e campo desconhecido no topo não derrubam o lote: 413 e 422 no lote inteiro fariam o agente reenviar para sempre um lote envenenado, e a 3.3 já pede o contrário. 413 fica para corpo acima de 2 MB; 422 para formato de lote inválido, lote vazio e mais de 100 eventos. Complemento 3.3, 3.4 e 6 corrigidos.
+- **`POST /events` só com agente.** A autenticação de engine (identidade de serviço) entra com a fase de módulos, em ADR próprio. Hoje não há engine, e desenhar sem consumidor seria chute.
+- **Enum de `severity`** (`info`, `low`, `medium`, `high`, `critical`): a spec não define os valores. Segue em aberto.
 
 ### Em aberto (adicionado)
 
