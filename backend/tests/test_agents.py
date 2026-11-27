@@ -82,7 +82,7 @@ def enrolled_agent(
     created = create_agent(client, headers, auth_id, **overrides)
     assert created.status_code == 201, created.text
     r = enroll(client, created.json()["enrollment_token"])
-    assert r.status_code == 200, r.text
+    assert r.status_code == 201, r.text
     return r.json()["agent_id"], r.json()["credential"]
 
 
@@ -273,7 +273,7 @@ def test_enroll_issues_credential_once_and_activates(
     headers = admin_headers(client, admin_engine)
     created = create_agent(client, headers, authorize(admin_engine)).json()
     r = enroll(client, created["enrollment_token"], host_id="host-7")
-    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    assert r.status_code == 201 and r.headers["cache-control"] == "no-store"
     credential = r.json()["credential"]
     assert credential.startswith(f"ares_agent_{uuid.UUID(created['agent_id']).hex}.")
     with DbSession(admin_engine) as db:
@@ -297,7 +297,7 @@ def test_enroll_issues_credential_once_and_activates(
 def test_enrollment_token_is_single_use(client: TestClient, admin_engine: Engine) -> None:
     headers = admin_headers(client, admin_engine)
     token = create_agent(client, headers, authorize(admin_engine)).json()["enrollment_token"]
-    assert enroll(client, token).status_code == 200
+    assert enroll(client, token).status_code == 201
     r = enroll(client, token)
     assert r.status_code == 401 and r.json()["code"] == "invalid_enrollment"
 
@@ -526,9 +526,110 @@ def test_cookie_is_not_needed_for_enroll_but_sessions_are_untouched(
 ) -> None:
     headers = admin_headers(client, admin_engine)
     token = create_agent(client, headers, authorize(admin_engine)).json()["enrollment_token"]
-    assert enroll(TestClient(client.app, base_url="https://testserver"), token).status_code == 200
+    assert enroll(TestClient(client.app, base_url="https://testserver"), token).status_code == 201
     assert client.cookies.get(SESSION_COOKIE)  # a sessão do administrador continua valendo
     assert client.get("/api/v1/me").status_code == 200
+
+
+# --- heartbeat do agente (ADR 0007) ----------------------------------------------
+
+
+def heartbeat(
+    client: TestClient, credential: str | None, path: str = "/api/v1/agents/heartbeat"
+) -> Response:
+    headers = {} if credential is None else {"Authorization": f"Agent {credential}"}
+    return cast(Response, client.post(path, headers=headers))
+
+
+def last_seen(engine: Engine, agent_id: str) -> datetime | None:
+    with engine.connect() as conn:
+        return cast(
+            datetime | None,
+            conn.execute(
+                text("SELECT last_seen_at FROM agents WHERE id = :i"), {"i": agent_id}
+            ).scalar_one(),
+        )
+
+
+def test_heartbeat_marks_agent_seen_without_body_or_event(
+    client: TestClient, admin_engine: Engine
+) -> None:
+    headers = admin_headers(client, admin_engine)
+    agent_id, credential = enrolled_agent(client, admin_engine, headers)
+    assert last_seen(admin_engine, agent_id) is None
+    anon = TestClient(client.app, base_url="https://testserver")
+    r = heartbeat(anon, credential)
+    assert r.status_code == 204 and r.content == b""
+    assert r.headers["Cache-Control"] == "no-store"
+    first = last_seen(admin_engine, agent_id)
+    assert first is not None
+    assert heartbeat(anon, credential).status_code == 204
+    # Dentro da janela não regrava (cada UPDATE deixa tupla morta no PostgreSQL).
+    assert last_seen(admin_engine, agent_id) == first
+    with admin_engine.begin() as conn:
+        conn.execute(text("UPDATE agents SET last_seen_at = last_seen_at - interval '1 minute'"))
+    assert heartbeat(anon, credential).status_code == 204
+    second = last_seen(admin_engine, agent_id)
+    assert second is not None and second > first - timedelta(minutes=1)
+    assert second >= first
+    with admin_engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM events")).scalar_one() == 0
+
+
+@pytest.mark.parametrize("credential", [None, "ares_agent_" + "0" * 32 + "." + "A" * 43, "lixo"])
+def test_heartbeat_requires_agent_credential(client: TestClient, credential: str | None) -> None:
+    anon = TestClient(client.app, base_url="https://testserver")
+    assert heartbeat(anon, credential).status_code == 401
+
+
+def test_heartbeat_is_not_open_to_humans_and_rejects_query(
+    client: TestClient, admin_engine: Engine
+) -> None:
+    headers = admin_headers(client, admin_engine)
+    _, credential = enrolled_agent(client, admin_engine, headers)
+    # Sessão de humano (cookie + CSRF) não vale como agente.
+    assert client.post("/api/v1/agents/heartbeat", headers=headers).status_code == 401
+    anon = TestClient(client.app, base_url="https://testserver")
+    assert heartbeat(anon, credential, "/api/v1/agents/heartbeat?x=1").status_code == 400
+
+
+def test_revoked_agent_or_lapsed_term_cannot_heartbeat(
+    client: TestClient, admin_engine: Engine
+) -> None:
+    headers = admin_headers(client, admin_engine)
+    auth_id = authorize(admin_engine)
+    anon = TestClient(client.app, base_url="https://testserver")
+    creds = []
+    for i in range(2):
+        tok = create_agent(client, headers, auth_id, key=f"k{i}", name=f"a{i}").json()
+        creds.append(
+            (tok["agent_id"], enroll(client, tok["enrollment_token"]).json()["credential"])
+        )
+    (id_a, cred_a), (_id_b, cred_b) = creds
+    assert heartbeat(anon, cred_a).status_code == 204
+    client.post(f"/api/v1/agents/{id_a}/revoke", headers=headers)
+    assert heartbeat(anon, cred_a).status_code == 401
+    assert heartbeat(anon, cred_b).status_code == 204
+    cli.revoke_authorization(admin_engine, auth_id)
+    assert heartbeat(anon, cred_b).status_code == 401
+
+
+def test_heartbeat_has_per_agent_rate_limit(app_engine: Engine, admin_engine: Engine) -> None:
+    with TestClient(
+        build_app(app_engine, agent_requests_per_minute=2), base_url="https://testserver"
+    ) as c:
+        headers = admin_headers(c, admin_engine)
+        auth_id = authorize(admin_engine)
+        creds = []
+        for i in range(2):
+            tok = create_agent(c, headers, auth_id, key=f"k{i}", name=f"a{i}").json()
+            creds.append(enroll(c, tok["enrollment_token"]).json()["credential"])
+        anon = TestClient(c.app, base_url="https://testserver")
+        assert [heartbeat(anon, creds[0]).status_code for _ in range(2)] == [204, 204]
+        r = heartbeat(anon, creds[0])
+        assert r.status_code == 429 and int(r.headers["Retry-After"]) >= 1
+        # Um agente acima do limite não derruba o outro.
+        assert heartbeat(anon, creds[1]).status_code == 204
 
 
 # --- CLI de manutenção ---------------------------------------------------------

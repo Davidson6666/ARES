@@ -953,7 +953,7 @@ def test_double_enroll_with_same_token_yields_one_credential(world: dict[str, An
         t.start()
     for t in threads:
         t.join()
-    assert sorted(codes) == [200, 401]
+    assert sorted(codes) == [201, 401]
     with world["engine"].connect() as conn:
         n = conn.execute(
             text(
@@ -989,7 +989,7 @@ def test_enroll_and_revoke_at_the_same_time_never_deadlock(world: dict[str, Any]
         t.start()
     for t in threads:
         t.join()
-    assert results["revoke"] == 200 and results["enroll"] in (200, 401, 409)
+    assert results["revoke"] == 200 and results["enroll"] in (201, 401, 409)
     with world["engine"].connect() as conn:
         status = conn.execute(
             text("SELECT status FROM agents WHERE id = :i"), {"i": created["agent_id"]}

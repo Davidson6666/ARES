@@ -14,11 +14,9 @@ import structlog
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
-from app.agents.deps import AgentContext, require_agent
-from app.agents.models import Agent
+from app.agents.deps import AgentContext, limited_agent, lock_active_agent
 from app.auth.dependencies import (
     allow_query,
     get_db,
@@ -75,20 +73,6 @@ class EventOut(BaseModel):
     # como HTML. O frontend precisa escapar por padrão (CLAUDE.md, 9.1).
     data: dict[str, Any]
     flags: list[str]
-
-
-def limited_agent(request: Request, ctx: AgentContext = Depends(require_agent)) -> AgentContext:
-    """Autentica o agente e aplica o limite de requisições por agente (429)."""
-    retry_after = request.app.state.agent_request_limiter.hit(str(ctx.agent.id))
-    if retry_after is not None:
-        log.warning("ingest.rate_limited", agent_id=str(ctx.agent.id), kind="requests")
-        raise ApiError(
-            429,
-            "rate_limited",
-            "Limite de requisições do agente excedido.",
-            headers={"Retry-After": str(retry_after)},
-        )
-    return ctx
 
 
 async def read_limited_body(request: Request) -> bytes:
@@ -167,20 +151,7 @@ def ingest(
     settings: Settings = Depends(get_settings),
 ) -> IngestResponse | JSONResponse:
     now = utcnow()
-    # Relê o agente travando a linha (FOR KEY SHARE): um `revoke` (FOR UPDATE) que
-    # chegou durante a leitura do corpo termina antes ou espera esta requisição
-    # acabar. Eventos de agente revogado nunca são gravados depois do commit da
-    # revogação. KEY SHARE não conflita com o UPDATE de last_seen_at de outra
-    # requisição do mesmo agente (FOR SHARE daria deadlock com a idempotência).
-    agent = db.scalar(
-        select(Agent)
-        .where(Agent.id == ctx.agent.id)
-        .with_for_update(read=True, key_share=True)
-        # Sem isto o SQLAlchemy devolve o objeto já carregado (status antigo).
-        .execution_options(populate_existing=True)
-    )
-    if agent is None or agent.status != "active":
-        raise ApiError(401, "unauthenticated", "Credencial de agente ausente ou inválida.")
+    agent = lock_active_agent(db, ctx.agent.id)
     key = idempotency.read_key(request)
     events = _parse_batch(raw)
     digest = idempotency.request_hash(raw)

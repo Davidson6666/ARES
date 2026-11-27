@@ -30,7 +30,7 @@
 | # | Questão | Decisão proposta | Justificativa | Revisar quando |
 |---|---|---|---|---|
 | 1 | Single-user ou multiusuário? | **Single-user no primeiro marco**, com schema de usuários, papéis e `user_roles` já completo. | Reduz escopo da fase 01 sem reescrever autorização depois. | Antes da fase 04 (identidade completa). |
-| 2 | Primeiro agente: serviço ou processo do usuário? | **Processo executado pelo usuário** na fase 04a; Windows Service na fase 04b. | Facilita depuração e não exige privilégio elevado no início. | Ao validar permissões mínimas do agente. |
+| 2 | Primeiro agente: serviço ou processo do usuário? | **Processo executado pelo usuário** na fase 04a; Windows Service na fase 04b. | Facilita depuração e não exige privilégio elevado no início. **Ressalva (ADR 0007, 27/11/2026):** ler o Security log exige administrador elevado ou participação no grupo `Event Log Readers`; o processo em si não precisa ser elevado. | Ao validar permissões mínimas do agente. |
 | 3 | Comunicação agente-servidor | **HTTPS com polling** e intervalo configurável. Canal persistente (WebSocket) só se a métrica de latência justificar. | Mais simples, atravessa firewall corporativo, fácil de auditar. | Quando a latência de alerta ultrapassar a meta de 30 s. |
 | 4 | Modelo de sessão web | **Cookie `Secure`, `HttpOnly`, `SameSite=Strict`**, com token CSRF para operações mutáveis. Nada de token em `localStorage`. | Evita roubo de token por XSS, que é um risco real do dashboard (ver seção 4). | Se surgir cliente não-navegador consumindo a API com sessão humana. |
 | 5 | Licença do código | **Apache-2.0** (confirmada). Verificar antes: Suricata e Wazuh são GPL; Zeek é BSD. Dependências GPL não devem ser vinculadas ao código do ARES sem análise. | Patente explícita e compatível com dependências permissivas. | Antes da primeira publicação pública. |
@@ -107,6 +107,7 @@
 | `PATCH /api/v1/modules/{id}/config` | Alterar configuração não secreta | `modules.configure` | Humano | 200 |
 | `POST /api/v1/agents` | Gerar token de enrolamento (uso único, validade 24 h) | `modules.configure` | Humano | 201 |
 | `POST /api/v1/agents/enroll` | Trocar o token de enrolamento pela credencial do agente (exige termo de autorização vigente) | — | Público, autenticado pelo token de enrolamento, com rate limit | 201 |
+| `POST /api/v1/agents/heartbeat` | Marcar o agente como visto (`last_seen_at`) sem enviar evento; sem corpo | — | Agente | 204 |
 | `POST /api/v1/agents/{id}/rotate` | Rotacionar credencial | `modules.configure` | Humano | 200 |
 | `POST /api/v1/agents/{id}/revoke` | Revogar credencial | `modules.configure` | Humano | 200 |
 | `POST /api/v1/events` | Ingestão de lote de eventos (máx. 100 por lote) | — | Agente (engine na fase de módulos) | 202 |
@@ -237,3 +238,5 @@ Erro padrão de corpo: `code` (estável, em snake_case), `message` (segura para 
 | 1.1 | 26/11/2026 | Checklist de pré-implementação, critérios para iniciar e primeira iteração. |
 | 1.2 | 26/11/2026 | Correções de consistência; decisões provisórias para as questões em aberto; modelo de dados completo; adendo à API; adendo ao modelo de ameaças; seção de privacidade e LGPD deixada em branco; envelope de evento v1; ajustes ao checklist. |
 | 1.2.1 | 27/11/2026 | Alinhada ao ADR 0006 (fase 01b): `POST /agents/enroll` público, autenticado pelo token de enrolamento (3.1 e 3.2); falha por evento vira `rejected` no 202, com 413/422 só para falha do lote (3.3, 3.4 e 6); `POST /events` só com agente, engine na fase de módulos (3.2). |
+| 1.2.2 | 27/11/2026 | Fase 04a (ADR 0007): rota `POST /agents/heartbeat` (3.2). |
+| 1.2.3 | 27/11/2026 | Fase 04a (ADR 0007): ressalva de privilégio na decisão 2 (seção 1); `POST /agents/enroll` responde 201, como a seção 3.2 já dizia (o código respondia 200 e foi corrigido). |
