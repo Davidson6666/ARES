@@ -241,8 +241,8 @@ Cada mitigação tem teste de aceitação. Não marque como concluída sem o tes
 
 | Fase | Escopo |
 |---|---|
-| 01a | Marco 1: escopo mínimo da seção 21.13 (itens 1 a 4). Estimativa 3–4 semanas. (1) Repositório, estrutura mínima, ambiente e documentação base. (2) Core inicial com configuração e `/health`/`/ready`. (3) Conexão PostgreSQL e primeira migração testada. (4) Identidade, login, sessão e autorização mínima. |
-| 01b | Auditoria completa e eventos. Mais 2–3 semanas. |
+| 01a (concluída em 27/11/2026, com MFA e recuperação de conta) | Marco 1: escopo mínimo da seção 21.13 (itens 1 a 4). Estimativa 3–4 semanas. (1) Repositório, estrutura mínima, ambiente e documentação base. (2) Core inicial com configuração e `/health`/`/ready`. (3) Conexão PostgreSQL e primeira migração testada. (4) Identidade, login, sessão e autorização mínima. |
+| 01b | Auditoria completa e eventos. Mais 2–3 semanas. **Escopo escolhido pelo autor em 27/11/2026:** eventos (envelope v1, `POST /events`, `GET /events/{id}`), agentes e credenciais, termo de autorização do operador, e o item 7 da 21.13 (integração e recuperação). **Fora da 01b:** administração de usuários e papéis, módulos e configuração. Desenho em `docs/adr/0006`. |
 | 04a | Primeiro agente como processo do usuário. |
 | 04b | Windows Service. |
 | 05 | Forensics (investigações e evidências). |
