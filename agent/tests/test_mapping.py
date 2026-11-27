@@ -82,7 +82,7 @@ def test_failed_logon_maps_only_whitelisted_fields() -> None:
             4732,
             "group.member_added",
             {"MemberName": "CN=x", "MemberSid": "S-1-5-21-1", "TargetUserName": "Administrators"},
-            {"member": "CN=x", "member_sid": "S-1-5-21-1", "group": "Administrators"},
+            {"member": "CN=x", "group": "Administrators"},
         ),
     ],
 )
@@ -94,6 +94,7 @@ def test_each_supported_event_id(
     data = env["data"]
     assert {k: data[k] for k in expected} == expected
     assert "PrivilegeList" not in data
+    assert "member_sid" not in data and "MemberSid" not in data  # minimização (ADR 0007, item 10)
 
 
 def test_values_are_sanitized_and_bounded() -> None:

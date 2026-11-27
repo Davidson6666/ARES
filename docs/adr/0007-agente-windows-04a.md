@@ -50,7 +50,7 @@
 | 4648 | `authentication.explicit_credentials` | usuário e domínio de origem, usuário e domínio alvo, processo |
 | 4672 | `privilege.special_assigned` | usuário, domínio |
 | 4720 | `account.created` | conta criada e seu domínio, quem criou e o domínio dele |
-| 4732 | `group.member_added` | membro, SID do membro, grupo, quem alterou e o domínio dele |
+| 4732 | `group.member_added` | membro, grupo, quem alterou e o domínio dele |
 | (interno) | `agent.queue_overflow` | quantos eventos a fila local descartou e o total (classificação `internal`, sem dado pessoal) |
 
 Todo evento de `data` leva também `channel`, `windows_event_id` e `record_id` (sem dado pessoal).
@@ -152,7 +152,7 @@ Itens aceitos como estão: a saída do `wevtutil` é limitada depois de lida (o 
 | 7 | **Privacidade (seção 5 do complemento, em branco)** | O agente coleta dado pessoal (usuário, estação, endereço de origem). Uso só na máquina do próprio autor, com termo registrado, e classificação `personal` | Antes de qualquer uso real, a análise de LGPD precisa ser feita por quem usar. Não preencho a seção 5 sem pedido |
 | 8 | **Retenção local** (fila e logs do agente) | Fila: limite por número e tamanho; log do agente com rotação | Crescimento no disco do usuário |
 | 9 | **Licenças** (`httpx`, `keyring` e dependências) | Registrar a análise antes da publicação | Mesma pendência do `psycopg` (LGPL) |
-| 10 | **`member_sid` e domínios no evento** (4720, 4732, 4648): o SID identifica a conta de forma mais forte que o nome | Manter (ajuda a correlacionar) ou cortar `member_sid` por minimização | Dado pessoal a mais saindo do host; decisão do autor |
+| 10 | **[decidido 27/11: `member_sid` cortado; domínios mantidos]** **`member_sid` e domínios no evento** (4720, 4732, 4648): o SID identifica a conta de forma mais forte que o nome | Manter (ajuda a correlacionar) ou cortar `member_sid` por minimização | Dado pessoal a mais saindo do host; decisão do autor |
 | 11 | **Enrolamento sem `Idempotency-Key`**: uma resposta perdida queima o token de uso único | Aceitar e gerar novo token; ou chave no `enroll` (servidor guarda a credencial cifrada, o que hoje não existe) | Baixo: o operador gera outro token |
 | 12 | **Transparência (v1.1, 17.2):** quem lê o dado do agente é quem tem `events.read` (hoje sem escopo por classificação); retenção no Core indefinida | Tabela no README (feita); retenção e acesso por `data_classification` são itens do Core (ADR 0006) | Antes de qualquer uso real |
 
