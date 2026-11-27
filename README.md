@@ -49,6 +49,16 @@ Requer [uv](https://docs.astral.sh/uv/), Python 3.14 e Docker Desktop.
    uv run python -m app.cli create-admin --email voce@exemplo.local --display-name "Seu Nome"
    ```
 
+Conferir a integridade da trilha de auditoria (código de saída 3 se a cadeia estiver quebrada):
+
+```powershell
+uv run python -m app.cli verify-audit
+```
+
+O comando imprime a cabeça da cadeia (`<id>:<entry_hash>`). Guarde esse valor **fora do servidor**. Nas próximas verificações, passe `--expect-head <id>:<entry_hash>`: sem essa âncora, a remoção das últimas entradas não é detectada (ver [ADR 0004](docs/adr/0004-auditoria-e-logs-estruturados.md)).
+
+Os logs saem em JSON, uma linha por evento, na saída padrão. Para um log de acesso no mesmo formato, rode o uvicorn com `--no-access-log` (o próprio ARES registra cada requisição, com `request_id`).
+
 Testes: `uv run pytest`. Os testes de banco só rodam com `ARES_TEST_ADMIN_DATABASE_URL` definido (usuário que pode criar bancos); cada teste cria e apaga um banco temporário.
 
 Usuários do banco:

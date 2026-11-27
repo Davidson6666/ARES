@@ -4,10 +4,12 @@ from fastapi import FastAPI
 from sqlalchemy import Engine
 
 from app.api.health import router as health_router
+from app.audit.router import router as audit_router
 from app.auth.router import router as auth_router
 from app.core.config import Settings
 from app.core.database import build_engine, make_session_factory
 from app.core.errors import register_exception_handlers
+from app.core.logging import configure_logging
 from app.core.rate_limit import SlidingWindowLimiter
 from app.core.request_id import request_id_middleware
 
@@ -17,6 +19,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     # possam criar a aplicação com valores próprios. ``engine`` permite aos
     # testes injetar um engine que roda como ares_app (SET ROLE).
     settings = settings or Settings()
+    configure_logging(settings.log_level)
     app = FastAPI(
         title="ARES Core",
         version="0.1.0",
@@ -37,6 +40,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     register_exception_handlers(app)
     app.include_router(health_router)
     app.include_router(auth_router)
+    app.include_router(audit_router)
     return app
 
 

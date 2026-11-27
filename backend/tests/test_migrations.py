@@ -15,6 +15,8 @@ EXPECTED_APP_GRANTS: set[tuple[str, str]] = {
     ("user_roles", "SELECT"),
     ("role_permissions", "SELECT"),
     *{("sessions", p) for p in ("SELECT", "INSERT", "UPDATE")},
+    # Auditoria append-only: nunca UPDATE nem DELETE.
+    *{("audit_logs", p) for p in ("SELECT", "INSERT")},
 }
 
 pytestmark = pytest.mark.db
@@ -27,7 +29,7 @@ def test_upgrade_and_downgrade_cycle(temp_database_url: str) -> None:
         command.upgrade(cfg, "head")
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert version == "0002"
+        assert version == "0003"
 
         command.downgrade(cfg, "base")
         # Na base, o Alembic mantém a tabela alembic_version, mas sem linhas.

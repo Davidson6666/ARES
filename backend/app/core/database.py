@@ -13,6 +13,9 @@ def build_engine(url: str) -> Engine:
     return create_engine(
         url,
         pool_pre_ping=True,
+        # Erros do banco não carregam valores dos parâmetros (e-mail, senha
+        # digitada no campo errado etc.) para exceções e logs.
+        hide_parameters=True,
         connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS},
     )
 
