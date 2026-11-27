@@ -1,0 +1,33 @@
+[project]
+name = "ares-agent"
+version = "0.1.0"
+description = "ARES Agent — agente Windows de telemetria (fase 04a)"
+license = "Apache-2.0"
+requires-python = "==3.14.*"
+dependencies = [
+    "httpx==0.29.0",
+    "keyring==25.7.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.2.0",
+    "ruff==0.17.6",
+    "mypy==2.4.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+files = ["ares_agent", "tests"]
+
+[tool.uv]
+# Aplicação, não biblioteca: não instalar o próprio projeto como pacote.
+package = false

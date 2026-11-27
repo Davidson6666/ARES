@@ -28,6 +28,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# O teste de integração do agente (tests/test_agent_integration.py) importa o pacote do
+# agente (../agent) para falar com o Core real.
+pythonpath = [".", "../agent"]
 
 [tool.ruff]
 line-length = 100
@@ -38,6 +41,7 @@ python_version = "3.14"
 strict = true
 plugins = ["pydantic.mypy"]
 files = ["app", "tests"]
+mypy_path = "../agent"
 
 [tool.uv]
 # Aplicação, não biblioteca: não instalar o próprio projeto como pacote.
