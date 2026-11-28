@@ -3,15 +3,15 @@
 Plataforma modular de ciberdefesa **defensiva**: painel web + agentes Windows/Linux.
 Nome de trabalho: **ARES**. Expansão proposta (provisória): *Adaptive Response & Event Security*.
 
-Projeto de portfólio, sem operação real. Repositório ainda sem código de funcionalidade.
+Projeto de portfólio, sem operação real.
 
 ## 1. Estado atual
 
 - **Confirmado:** especificação escrita. Especificação Geral v1.1 em `docs/ARES_Especificacao_Geral_e_Arquitetura_Core_v1.1.md` (conversão do `.docx` original, mantido em `docs/`; conferida palavra a palavra em 26/11/2026; leia o `.md`) e Complemento v1.2 em `docs/ARES_Core_v1.2_Complemento.md`.
-- **Não implementado:** nenhum código de funcionalidade. Não marque nada como implementado sem código existente ou teste passando.
-- **Repositório:** Git iniciado em 26/11/2026, branch `main`, remoto `origin` = `https://github.com/Davidson6666/ARES.git`. Existem `README.md`, `LICENSE` (Apache-2.0), `.gitignore`, `.gitattributes`, `docs/ENVIRONMENT.md` e `docs/adr/` (vazio).
-- **Escopo da fase 01a:** seção 21.13 da v1.1, itens 1 a 4 (ver seção 11 deste arquivo).
-- **Banco de desenvolvimento:** PostgreSQL em contêiner Docker, escolhido pelo autor em 26/11/2026. ADR pendente (`/new-adr`, executado pelo autor).
+- **Implementado, com testes:** Core (fases 01a e 01b, em `backend/`) e agente Windows (04a, em `agent/`). **Não implementado:** frontend, engines, detecção, administração de usuários e papéis por API (01c). Não marque nada como implementado sem código existente ou teste passando.
+- **Repositório:** Git iniciado em 26/11/2026, branch `main`, remoto `origin` = `https://github.com/Davidson6666/ARES.git`. Existem `README.md`, `LICENSE` (Apache-2.0), `.gitignore`, `.gitattributes`, `docs/ENVIRONMENT.md`, `backend/`, `agent/` e `docs/adr/` (ADRs 0001 a 0008).
+- **Fase atual:** 01c, administração do Core (usuários, papéis e permissões). Desenho em `docs/adr/0008` (proposto). As fases 01a, 01b e 04a estão na `main`; escopo de cada uma na seção 11.
+- **Banco de desenvolvimento:** PostgreSQL em contêiner Docker, escolhido pelo autor em 26/11/2026 (`docs/adr/0001`).
 
 ## 2. Fontes de verdade
 
@@ -65,7 +65,7 @@ Projeto de portfólio, sem operação real. Repositório ainda sem código de fu
 | Verificação de licença das dependências | Análise por dependência | Vincular GPL sem análise | Antes da primeira publicação pública |
 | Acesso a `/ready` (complemento 3.1 diz público só `/health`; v1.1 seção 15 diz "interno/admin conforme implantação") | Restringir na implantação (bind local, proxy) ou exigir autenticação | Hoje é público, com corpo mínimo e sem motivo técnico | Item 4 da 21.13 |
 | Formato do corpo de erro: plano (complemento 3.4) × aninhado em `error` (exemplo da v1.1, 15.2) | Implementado plano, porque o complemento prevalece | Baixo; a 15.2 da v1.1 não foi corrigida explicitamente | Próxima revisão da spec |
-| `DELETE /auth/mfa` aceita "próprio usuário ou `users.write`" (complemento 3.2), mas a rota não tem `{id}` | Rota própria para administrador desativar o MFA de outro usuário, ou corrigir o texto do complemento | Só o próprio usuário pode desativar, e papéis administrativos não podem | Antes da gestão de usuários (01b) |
+| `DELETE /auth/mfa` aceita "próprio usuário ou `users.write`" (complemento 3.2), mas a rota não tem `{id}` | Rota própria para administrador desativar o MFA de outro usuário, ou corrigir o texto do complemento | Só o próprio usuário pode desativar, e papéis administrativos não podem | ADR 0008 (01c): rota `POST /users/{id}/mfa/reset` proposta |
 | `secret_ref` "aponta para cofre" (complemento 2.1; seção 6.1 deste arquivo) × ADR 0005: guarda a versão da chave, e o segredo cifrado fica em `secret_ciphertext` | Alinhar o complemento e a seção 6.1 ao ADR 0005 | Documentos divergentes | Próxima revisão da spec |
 | Parâmetro de query desconhecido → 400 (complemento 3.4) | Aplicar a todas as rotas ou só às de `/api/v1` | `/health?x=1` responde 200 hoje | Item 4 da 21.13 |
 
@@ -245,6 +245,7 @@ Cada mitigação tem teste de aceitação. Não marque como concluída sem o tes
 |---|---|
 | 01a (concluída em 27/11/2026, com MFA e recuperação de conta) | Marco 1: escopo mínimo da seção 21.13 (itens 1 a 4). Estimativa 3–4 semanas. (1) Repositório, estrutura mínima, ambiente e documentação base. (2) Core inicial com configuração e `/health`/`/ready`. (3) Conexão PostgreSQL e primeira migração testada. (4) Identidade, login, sessão e autorização mínima. |
 | 01b | Auditoria completa e eventos. Mais 2–3 semanas. **Escopo escolhido pelo autor em 27/11/2026:** eventos (envelope v1, `POST /events`, `GET /events/{id}`), agentes e credenciais, termo de autorização do operador, e o item 7 da 21.13 (integração e recuperação). **Fora da 01b:** administração de usuários e papéis, módulos e configuração. Desenho em `docs/adr/0006`. |
+| 01c | Administração do Core: usuários, papéis e permissões por API (`/users*`, `/roles*`, `/permissions`), reset de MFA por administrador. **Aberta em 28/11/2026.** Desenho em `docs/adr/0008` (proposto). Módulos e configuração (`/modules*`, `/config*`) ficam para o primeiro engine. |
 | 04a | Primeiro agente como processo do usuário. **Aberta em 27/11/2026** (escolha do autor, depois de concluída a fase 01). Desenho em `docs/adr/0007` (aceito em 27/11/2026). Escopo proposto: enrolamento, coleta do Security log (4624, 4625, 4648, 4672, 4720, 4732), fila local limitada e envio por HTTPS com polling. |
 | 04b | Windows Service. |
 | 05 | Forensics (investigações e evidências). |
