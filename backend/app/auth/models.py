@@ -17,6 +17,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    false,
     func,
     text,
 )
@@ -55,7 +56,9 @@ class Role(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(Text, unique=True)
     description: Mapped[str] = mapped_column(Text, default="")
-    is_system: Mapped[bool] = mapped_column(default=False)
+    # Só o servidor define (padrão falso): o ares_app não tem INSERT nesta coluna
+    # (migração 0006), então o ORM não pode mandá-la no INSERT.
+    is_system: Mapped[bool] = mapped_column(server_default=false())
 
 
 class Permission(Base):

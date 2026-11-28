@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session as DbSession
 from app.agents.models import OperatorAuthorization
 from app.audit import service as audit
 from app.auth import crypto, mfa, passwords
-from app.auth.models import Role, User, UserRole
+from app.auth.models import MfaFactor, Role, User, UserRole
 from app.auth.service import normalize_email
 from app.core.config import Settings
 from app.core.database import build_engine
@@ -113,6 +113,44 @@ def issue_recovery(engine: Engine, email: str) -> str:
         )
         db.commit()
         return token
+
+
+def revoke_mfa(engine: Engine, email: str) -> None:
+    """Revoga o MFA ativo de uma conta e encerra as sessões dela (ADR 0008).
+
+    Para o caso de o único administrador perder o TOTP e os códigos de recuperação. Só
+    pelo CLI, no servidor (quem tem acesso ao host já está fora da proteção do Core,
+    CLAUDE.md 9.3). A conta recadastra o TOTP no próximo login. Auditado como ``system``.
+    """
+    email = normalize_email(email)
+    now = datetime.now(UTC)
+    with DbSession(engine) as db:
+        user = db.scalar(select(User).where(User.email == email).with_for_update())
+        factor = (
+            db.scalar(
+                select(MfaFactor)
+                .where(MfaFactor.user_id == user.id, MfaFactor.status == "active")
+                .with_for_update()
+            )
+            if user is not None
+            else None
+        )
+        if user is None or factor is None:
+            raise CliError("Conta inexistente ou sem MFA ativo.")
+        factor.status = "revoked"
+        factor.revoked_at = now
+        mfa.revoke_all_sessions(db, user.id, now)
+        audit.record(
+            db,
+            action="user.mfa_reset",
+            result="success",
+            actor_type="system",
+            resource_type="user",
+            resource_id=str(user.id),
+            reason="cli",
+            now=now,
+        )
+        db.commit()
 
 
 def record_authorization(engine: Engine, reference: str, description: str, days: int) -> uuid.UUID:
@@ -229,6 +267,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub.add_parser("generate-mfa-key", help="Gera uma chave para ARES_MFA_KEY.")
     recovery = sub.add_parser("issue-recovery", help="Emite um token de recuperação de conta.")
     recovery.add_argument("--email", required=True)
+    revoke_mfa_cmd = sub.add_parser(
+        "revoke-mfa", help="Revoga o MFA de uma conta (administrador sem TOTP nem códigos)."
+    )
+    revoke_mfa_cmd.add_argument("--email", required=True)
     authz = sub.add_parser(
         "record-authorization", help="Registra o termo de autorização do operador."
     )
@@ -304,6 +346,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         finally:
             engine.dispose()
+        return 0
+    if args.command == "revoke-mfa":
+        try:
+            revoke_mfa(engine, args.email)
+        except CliError as exc:
+            print(f"Erro: {exc}", file=sys.stderr)
+            return 1
+        finally:
+            engine.dispose()
+        print("MFA revogado e sessões encerradas. A conta recadastra o TOTP no próximo login.")
         return 0
     if args.command == "issue-recovery":
         try:
