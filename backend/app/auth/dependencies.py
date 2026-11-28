@@ -112,6 +112,35 @@ def require_permission(permission: str) -> Callable[..., AuthContext]:
     return dependency
 
 
+def require_any_permission(*permissions: str) -> Callable[..., AuthContext]:
+    """Como ``require_permission``, mas basta uma das permissões (ex.: GET /roles)."""
+
+    def dependency(
+        request: Request,
+        ctx: AuthContext = Depends(require_session),
+        db: DbSession = Depends(get_db),
+    ) -> AuthContext:
+        _, perms = service.roles_and_permissions(db, ctx.user.id)
+        if not set(permissions) & set(perms):
+            audit.record(
+                db,
+                action="authz.denied",
+                result="denied",
+                actor_type="user",
+                actor_user_id=ctx.user.id,
+                resource_type="route",
+                resource_id=route_label(request),
+                reason="missing_permission",
+                request_id=getattr(request.state, "request_id", None),
+                details={"permission": " | ".join(permissions)},
+            )
+            db.commit()
+            raise ApiError(403, "permission_denied", "A operação não é permitida.")
+        return ctx
+
+    return dependency
+
+
 def allow_query(*names: str) -> Callable[[Request], None]:
     """Complemento 3.4: parâmetro de query desconhecido é 400."""
     allowed = set(names)

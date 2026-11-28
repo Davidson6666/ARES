@@ -274,7 +274,11 @@ def register_failure(challenge: MfaChallenge, now: datetime) -> bool:
 # --- recuperação de conta ---------------------------------------------------
 
 
-def issue_recovery_token(db: DbSession, user_id: uuid.UUID, now: datetime) -> str:
+def issue_recovery_token(
+    db: DbSession, user_id: uuid.UUID, now: datetime, minutes: int = RECOVERY_TOKEN_MINUTES
+) -> str:
+    """Token de uso único para definir a senha. Recuperação: 15 min. Configuração inicial
+    de conta nova (ADR 0008): prazo maior, passado em ``minutes``."""
     db.execute(
         update(RecoveryToken)
         .where(RecoveryToken.user_id == user_id, RecoveryToken.used_at.is_(None))
@@ -287,7 +291,7 @@ def issue_recovery_token(db: DbSession, user_id: uuid.UUID, now: datetime) -> st
             user_id=user_id,
             token_hash=_sha256(token),
             created_at=now,
-            expires_at=now + timedelta(minutes=RECOVERY_TOKEN_MINUTES),
+            expires_at=now + timedelta(minutes=minutes),
         )
     )
     db.flush()

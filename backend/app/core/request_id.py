@@ -15,7 +15,14 @@ import structlog
 from fastapi import Request, Response
 
 HEADER = "X-Request-ID"
-_NO_STORE_PREFIXES = ("/api/v1/auth/", "/api/v1/agents", "/api/v1/events")
+_NO_STORE_PREFIXES = (
+    "/api/v1/auth/",
+    "/api/v1/agents",
+    "/api/v1/events",
+    "/api/v1/users",
+    "/api/v1/roles",
+    "/api/v1/permissions",
+)
 log = structlog.get_logger("ares.access")
 
 

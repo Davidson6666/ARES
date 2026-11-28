@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from sqlalchemy import Engine
 
+from app.admin.users import router as admin_users_router
 from app.agents.router import router as agents_router
 from app.api.health import router as health_router
 from app.audit.router import router as audit_router
@@ -76,6 +77,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(agents_router)
     app.include_router(ingress_router)
     app.include_router(audit_router)
+    app.include_router(admin_users_router)
     return app
 
 
