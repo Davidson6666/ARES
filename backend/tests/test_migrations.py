@@ -1,6 +1,7 @@
 import pytest
 from alembic import command
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy.exc import DBAPIError
 
 from tests.conftest import alembic_config as _alembic_config
 
@@ -10,11 +11,13 @@ from tests.conftest import alembic_config as _alembic_config
 # Nenhum DELETE em users nem em sessions (usuário nunca é apagado; sessão é revogada).
 EXPECTED_APP_GRANTS: set[tuple[str, str]] = {
     # UPDATE em users e agents é por COLUNA (ver test_app_role_column_updates).
-    ("users", "SELECT"),
+    # Administração do Core (ADR 0008): cria usuário e papel personalizado; nunca DELETE
+    # em users nem em roles. Vínculos de papel e permissão podem ser removidos.
+    *{("users", p) for p in ("SELECT", "INSERT")},
     ("roles", "SELECT"),
     ("permissions", "SELECT"),
-    ("user_roles", "SELECT"),
-    ("role_permissions", "SELECT"),
+    *{("user_roles", p) for p in ("SELECT", "INSERT", "DELETE")},
+    *{("role_permissions", p) for p in ("SELECT", "INSERT", "DELETE")},
     *{("sessions", p) for p in ("SELECT", "INSERT", "UPDATE")},
     # Auditoria append-only: nunca UPDATE nem DELETE.
     *{("audit_logs", p) for p in ("SELECT", "INSERT")},
@@ -47,7 +50,7 @@ def test_upgrade_and_downgrade_cycle(temp_database_url: str) -> None:
         command.upgrade(cfg, "head")
         with engine.connect() as conn:
             version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert version == "0005"
+        assert version == "0006"
 
         command.downgrade(cfg, "base")
         # Na base, o Alembic mantém a tabela alembic_version, mas sem linhas.
@@ -122,8 +125,96 @@ def test_app_role_column_updates(temp_database_url: str, app_role: str) -> None:
             "locked_until",
             "password_hash",
             "updated_at",
+            "display_name",  # 01c: PATCH /users/{id}
+            "status",  # 01c: desativar
+            "tenant_id",  # 01c: escopo, só por quem não tem escopo
         }
-        assert ("users", "tenant_id") not in granted and ("users", "status") not in granted
+        assert ("users", "email") not in granted and ("users", "id") not in granted
+        # INSERT em roles é por coluna: is_system nunca (a API não cria papel de sistema).
+        with engine.connect() as conn:
+            role_insert = {
+                row.column_name
+                for row in conn.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.column_privileges "
+                        "WHERE grantee = :r AND privilege_type = 'INSERT' "
+                        "AND table_name = 'roles' AND table_schema = 'public'"
+                    ),
+                    {"r": app_role},
+                )
+            }
+        assert role_insert == {"id", "name", "description"}
         assert ("agents", "tenant_id") not in granted and ("agents", "module") not in granted
     finally:
         engine.dispose()
+
+
+def test_app_role_cannot_create_system_roles(app_engine: Engine) -> None:
+    """INSERT em roles é só de id, name e description: is_system fica falso."""
+    with app_engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO roles (id, name, description) VALUES (gen_random_uuid(), 'x', '')")
+        )
+        assert (
+            conn.execute(text("SELECT is_system FROM roles WHERE name = 'x'")).scalar_one() is False
+        )
+    with pytest.raises(DBAPIError, match="permission denied"), app_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO roles (id, name, description, is_system) "
+                "VALUES (gen_random_uuid(), 'y', '', true)"
+            )
+        )
+
+
+def test_system_roles_are_immutable_even_for_the_owner(admin_engine: Engine) -> None:
+    """Gatilho no banco: nem o dono altera papel de sistema ou suas permissões."""
+    with admin_engine.connect() as conn:
+        system_role = conn.execute(
+            text("SELECT id FROM roles WHERE is_system ORDER BY name LIMIT 1")
+        ).scalar_one()
+    for statement in (
+        "UPDATE roles SET description = 'x' WHERE id = :r",
+        "DELETE FROM roles WHERE id = :r",
+        "DELETE FROM role_permissions WHERE role_id = :r",
+        (
+            "INSERT INTO role_permissions (role_id, permission_id) "
+            "SELECT :r, id FROM permissions WHERE id NOT IN "
+            "(SELECT permission_id FROM role_permissions WHERE role_id = :r) LIMIT 1"
+        ),
+    ):
+        with pytest.raises(DBAPIError, match="imutáve"), admin_engine.begin() as conn:
+            conn.execute(text(statement), {"r": system_role})
+
+
+def test_custom_roles_are_editable_by_the_app(app_engine: Engine) -> None:
+    with app_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO roles (id, name, description) "
+                "VALUES ('00000000-0000-4000-8000-0000000000aa', 'custom', '')"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO role_permissions (role_id, permission_id) "
+                "SELECT '00000000-0000-4000-8000-0000000000aa', id FROM permissions "
+                "WHERE name = 'events.read'"
+            )
+        )
+    with app_engine.begin() as conn:
+        deleted = conn.execute(
+            text(
+                "DELETE FROM role_permissions "
+                "WHERE role_id = '00000000-0000-4000-8000-0000000000aa'"
+            )
+        ).rowcount
+    assert deleted == 1
+    # Mas a API não renomeia nem apaga o papel (sem UPDATE/DELETE em roles).
+    for statement in (
+        "UPDATE roles SET description = 'x' WHERE name = 'custom'",
+        "DELETE FROM roles WHERE name = 'custom'",
+        "DELETE FROM users",
+    ):
+        with pytest.raises(DBAPIError, match="permission denied"), app_engine.begin() as conn:
+            conn.execute(text(statement))
