@@ -2,9 +2,11 @@
 
 | Campo | Valor |
 |---|---|
-| Status | Proposto |
+| Status | Aceito (autor, 28/11/2026, com as recomendações) |
 | Data | 2026-11-28 |
 | Revisar até | 2026-12-12 |
+
+**Decisões do autor (28/11/2026):** módulos e configuração ficam para um 01d; onboarding por token de uso único (sem senha definida pelo administrador); reativação de usuário fica fora desta fase; `revoke-mfa` entra nesta fase.
 
 ## Contexto
 
